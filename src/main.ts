@@ -1,4 +1,5 @@
 import './style.css'
+import * as XLSX from 'xlsx'
 
 type IconName =
   | 'arrow'
@@ -79,6 +80,7 @@ const header = () => `
   <div class="mobile-menu" aria-hidden="true">
     <button class="icon-button mobile-menu-close" type="button" aria-label="Stäng meny">${icon('close')}</button>
     ${navMap.map(([label, id]) => `<a href="#${id}">${label}</a>`).join('')}
+    <a href="#faq">Logga in</a>
     <a class="mobile-cta" href="#cta">Testa gratis ${icon('arrow', 16)}</a>
   </div>
 `
@@ -318,6 +320,238 @@ const transform = () => `
   </section>
 `
 
+type ExcelAnalysis = {
+  fileName: string
+  sheetNames: string[]
+  columns: string[]
+  rows: string[][]
+  rowCount: number
+  formFields: string[]
+  statusFields: string[]
+}
+
+const escapeHtml = (value: unknown) => String(value ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#039;')
+
+const matchesColumn = (column: string, terms: string[]) => {
+  const normalized = column.toLocaleLowerCase('sv-SE')
+  return terms.some((term) => normalized.includes(term))
+}
+
+const analyzeExcelFile = async (file: File): Promise<ExcelAnalysis> => {
+  const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true })
+  const sheetNames = workbook.SheetNames
+  const firstSheet = sheetNames[0] ? workbook.Sheets[sheetNames[0]] : undefined
+  const matrix = firstSheet
+    ? XLSX.utils.sheet_to_json<unknown[]>(firstSheet, { header: 1, defval: '' })
+    : []
+  const nonEmptyRows = matrix.filter((row) => row.some((cell) => String(cell ?? '').trim() !== ''))
+  const columns = (nonEmptyRows[0] ?? []).map((column, index) => String(column || `Kolumn ${index + 1}`).trim())
+  const dataRows = nonEmptyRows.slice(1).map((row) => columns.map((_, index) => String(row[index] ?? '').trim()))
+
+  if (!columns.length || !dataRows.length) throw new Error('EMPTY_WORKBOOK')
+
+  const formFields = columns.filter((column) => !matchesColumn(column, ['godkänd', 'godkand', 'status', 'approved']))
+  const statusFields = columns.filter((column) => matchesColumn(column, ['godkänd', 'godkand', 'status', 'approved']))
+
+  return {
+    fileName: file.name,
+    sheetNames,
+    columns,
+    rows: dataRows.slice(0, 8),
+    rowCount: dataRows.length,
+    formFields: formFields.length ? formFields.slice(0, 5) : columns.slice(0, 5),
+    statusFields,
+  }
+}
+
+const uploadResult = () => '<div class="upload-result" id="upload-result" aria-live="polite" hidden></div>'
+
+const renderAnalysisLoading = (fileName: string) => `
+  <div class="analysis-loading">
+    <div class="analysis-file"><span class="file-pulse">${icon('file', 22)}</span><div><strong>${escapeHtml(fileName)}</strong><small>Flowly läser filen lokalt i din browser</small></div></div>
+    <p class="analysis-status">Analyserar filen...</p>
+    <ol class="analysis-steps">
+      <li class="is-done"><span>✓</span> Fil uppladdad</li>
+      <li class="is-active"><span>→</span> Läser kolumner</li>
+      <li><span>→</span> Analyserar struktur</li>
+      <li><span>→</span> Förbereder arbetsflöde</li>
+    </ol>
+  </div>
+`
+
+const renderAnalysisError = (title: string, message: string) => `
+  <div class="analysis-message error-message"><span class="message-icon">!</span><div><strong>${title}</strong><p>${message}</p></div><button type="button" class="button button-light analysis-retry">Försök igen</button></div>
+`
+
+const renderAnalysis = (analysis: ExcelAnalysis) => {
+  const columnHeaders = analysis.columns.map((column) => `<th>${escapeHtml(column)}</th>`).join('')
+  const previewRows = analysis.rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`).join('')
+  const statusLabel = analysis.statusFields[0] ?? 'Status'
+  const processTitle = matchesColumn(analysis.columns.join(' '), ['tim', 'hour']) ? 'Tidrapportering' : 'Ert arbetsflöde'
+
+  return `
+    <div class="analysis-result-head">
+      <div><p class="eyebrow">Analys klar</p><h3>Vi hittade ett arbetsflöde</h3><p>${escapeHtml(analysis.fileName)}</p></div>
+      <button type="button" class="icon-button analysis-close" aria-label="Ladda upp en annan fil">${icon('close', 16)}</button>
+    </div>
+    <div class="analysis-stats"><div><strong>${analysis.sheetNames.length}</strong><span>ark</span></div><div><strong>${analysis.columns.length}</strong><span>kolumner</span></div><div><strong>${analysis.rowCount}</strong><span>rader</span></div></div>
+    <div class="analysis-preview"><div class="analysis-section-label"><span>Förhandsvisning</span><small>Visar ${analysis.rows.length} av ${analysis.rowCount} rader</small></div><div class="preview-table-wrap"><table><thead><tr>${columnHeaders}</tr></thead><tbody>${previewRows}</tbody></table></div></div>
+    <div class="workflow-suggestion"><div class="analysis-section-label"><span>Så här skulle Flowly kunna strukturera processen</span><small>Baserat på filens kolumnnamn</small></div><div class="workflow-track"><div class="workflow-node"><span class="node-kicker">01 · Formulär</span><strong>${analysis.formFields.map(escapeHtml).join(' · ')}</strong></div><i>↓</i><div class="workflow-node"><span class="node-kicker">02 · Godkännande</span><strong>${escapeHtml(statusLabel)}</strong></div><i>↓</i><div class="workflow-node"><span class="node-kicker">03 · Översikt</span><strong>${analysis.columns.slice(0, 4).map(escapeHtml).join(' · ')}</strong></div></div></div>
+    <div class="flowly-preview"><div class="analysis-section-label"><span>Från Excel till app</span><small>Förhandsvisning</small></div><div class="preview-app"><aside><strong>Flowly</strong><span class="is-selected">${icon('chart', 13)} Översikt</span><span>${icon('clipboard', 13)} Mina uppgifter</span><span>${icon('check', 13)} Godkännanden</span></aside><div><small>Den här veckan</small><h4>${escapeHtml(processTitle)}</h4>${analysis.rows.slice(0, 3).map((row, index) => `<div class="preview-app-row"><span class="preview-avatar">${escapeHtml((row[0] || 'A').slice(0, 2).toUpperCase())}</span><strong>${escapeHtml(row[0] || `Rad ${index + 1}`)}</strong><span>${escapeHtml(row.find((cell) => /\d/.test(cell)) || 'Pågående')}</span><em class="${index === 1 ? 'is-waiting' : ''}">${escapeHtml(statusLabel)} ${index === 1 ? 'Väntar' : 'Godkänd'}</em></div>`).join('')}</div></div></div>
+    <div class="analysis-cta"><div><h3>Vill ni göra det här till ett riktigt arbetsflöde?</h3><p>Det här är bara ett exempel på hur Flowly kan strukturera processen.</p></div><div><button type="button" class="button button-primary create-workflow">Skapa mitt arbetsflöde ${icon('arrow', 15)}</button><button type="button" class="text-link analysis-another">Ladda upp en annan fil</button></div></div>
+  `
+}
+
+type WorkflowField = { name: string; type: string; required: boolean; value: string }
+type Report = { id: number; values: Record<string, string>; status: 'Väntar' | 'Godkänd' | 'Avvisad' }
+type ProductState = {
+  screen: 'onboarding' | 'dashboard' | 'workflows' | 'builder' | 'use' | 'approvals' | 'team' | 'settings'
+  builderTab: 'form' | 'workflow' | 'approvals' | 'team'
+  onboardingStep: 1 | 2 | 3 | 4
+  topic: string
+  customTopic: string
+  analysis?: ExcelAnalysis
+  fields: WorkflowField[]
+  selectedField: number
+  approver: string
+  afterApproval: string
+  saved: boolean
+  published: boolean
+  reports: Report[]
+}
+
+const productState: ProductState = {
+  screen: 'onboarding', builderTab: 'form', onboardingStep: 1, topic: '', customTopic: '', fields: [], selectedField: 0,
+  approver: 'Chef', afterApproval: 'Markera som klar', saved: false, published: false, reports: [],
+}
+
+const storedProductState = localStorage.getItem('flowly-product-state')
+if (storedProductState) {
+  try { Object.assign(productState, JSON.parse(storedProductState)) } catch { localStorage.removeItem('flowly-product-state') }
+}
+
+const persistProductState = () => localStorage.setItem('flowly-product-state', JSON.stringify(productState))
+
+const authModal = () => `
+  <div class="auth-overlay" id="auth-overlay" hidden>
+    <div class="auth-card" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+      <button type="button" class="icon-button auth-close" aria-label="Stäng">${icon('close', 17)}</button>
+      <span class="brand auth-brand"><span class="brand-mark">f</span>flowly</span>
+      <div class="auth-heading"><p class="eyebrow">${icon('spark', 12)} Flowly workspace</p><h2 id="auth-title">Skapa ditt Flowly-konto</h2><p class="auth-description">Skapa ett gratis konto och bygg ert första arbetsflöde.</p></div>
+      <div class="auth-tabs"><button type="button" class="auth-tab is-active" data-auth-mode="signup">Skapa konto</button><button type="button" class="auth-tab" data-auth-mode="login">Logga in</button></div>
+      <form class="auth-form" data-auth-form>
+        <label class="name-field">Namn<input name="name" type="text" placeholder="Anna Andersson" autocomplete="name" required /></label>
+        <label>E-post<input name="email" type="email" placeholder="ni@foretag.se" autocomplete="email" required /></label>
+        <label>Lösenord<input name="password" type="password" placeholder="Minst 8 tecken" minlength="8" autocomplete="new-password" required /></label>
+        <a class="forgot-link" href="#">Glömt lösenord?</a>
+        <p class="auth-error" aria-live="polite"></p>
+        <button class="button button-primary button-full" type="submit" data-auth-submit>Skapa konto ${icon('arrow', 15)}</button>
+      </form>
+      <div class="auth-divider"><span>eller</span></div>
+      <button type="button" class="button button-light button-full google-button">${icon('users', 16)} Fortsätt med Google</button>
+      <p class="terms-copy">Genom att skapa ett konto godkänner du Flowlys villkor och integritetspolicy.</p>
+    </div>
+  </div>
+`
+
+const onboardingSteps = () => `<div class="product-stepper">${[['01', 'Konto'], ['02', 'Arbetsflöde'], ['03', 'Excel'], ['04', 'Konfigurera']].map(([number, label], index) => `<span class="${index + 1 <= productState.onboardingStep ? 'is-active' : ''}"><b>${number}</b>${label}</span>`).join('')}</div>`
+
+const productSidebar = () => `
+  <aside class="product-sidebar">
+    <a class="product-brand" href="#product-dashboard"><span class="brand-mark">f</span><strong>flowly</strong></a>
+    <div class="workspace-switcher">${av('N', 'sand')}<span><small>Workspace</small>Nordmark AB</span>${icon('arrow', 13)}</div>
+    <nav class="product-nav"><p>Arbetsyta</p>${[['dashboard', 'chart', 'Översikt'], ['workflows', 'workflow', 'Mina arbetsflöden'], ['approvals', 'check', 'Godkännanden'], ['team', 'users', 'Team']].map(([screen, ic, label]) => `<button type="button" data-product-screen="${screen}" class="${productState.screen === screen ? 'is-active' : ''}">${icon(ic as IconName, 16)}${label}${screen === 'approvals' && productState.reports.filter((report) => report.status === 'Väntar').length ? `<b>${productState.reports.filter((report) => report.status === 'Väntar').length}</b>` : ''}</button>`).join('')}<p class="nav-spacer">Workspace</p><button type="button" data-product-screen="settings" class="${productState.screen === 'settings' ? 'is-active' : ''}">${icon('settings', 16)}Inställningar</button></nav>
+    <div class="sidebar-bottom"><span>${av('AA', 'peach')}<span><strong>${escapeHtml(localStorage.getItem('flowly-user-name') || 'Anna Andersson')}</strong><small>Admin</small></span></span><button type="button" data-product-action="logout" aria-label="Logga ut">${icon('arrow', 15)}</button></div>
+  </aside>
+`
+
+const productHeader = (title: string, description: string) => `<header class="product-header"><div><p class="product-kicker">Flowly workspace</p><h1>${title}</h1><p>${description}</p></div><div class="product-header-actions"><span class="workspace-status"><i></i> Lokalt workspace</span><button type="button" class="icon-button">${icon('bell', 16)}</button></div></header>`
+
+const workflowFieldsFromAnalysis = (analysis: ExcelAnalysis): WorkflowField[] => analysis.columns.map((name) => ({
+  name,
+  type: matchesColumn(name, ['tim', 'antal', 'sum', 'kostnad']) ? 'Number' : matchesColumn(name, ['datum', 'date']) ? 'Date' : matchesColumn(name, ['godkänd', 'godkand', 'status']) ? 'Status' : 'Text',
+  required: !matchesColumn(name, ['kommentar', 'comment']),
+  value: '',
+}))
+
+const onboardingView = () => {
+  if (productState.onboardingStep === 1) return `<div class="onboarding-panel"><div class="onboarding-copy"><p class="product-kicker">Steg 02 · Arbetsflöde</p><h1>Välkommen till Flowly</h1><p>Låt oss bygga ert första arbetsflöde. Vad vill ni göra enklare?</p></div><div class="topic-grid">${['Tidrapportering', 'Beställningar', 'Kvalitetskontroller', 'Avvikelsehantering', 'Projektuppföljning', 'Annat'].map((topic) => `<button type="button" class="topic-card ${productState.topic === topic ? 'is-selected' : ''}" data-topic="${topic}"><span>${icon(topic === 'Tidrapportering' ? 'clock' : topic === 'Beställningar' ? 'box' : topic === 'Projektuppföljning' ? 'chart' : 'clipboard', 18)}</span><strong>${topic}</strong><small>${topic === 'Annat' ? 'Beskriv själv' : 'Bygg från en befintlig process'}</small></button>`).join('')}</div>${productState.topic === 'Annat' ? '<textarea class="custom-topic" placeholder="Beskriv ert arbetsflöde…"></textarea>' : ''}<button type="button" class="button button-primary onboarding-next" ${productState.topic ? '' : 'disabled'}>Fortsätt till Excel ${icon('arrow', 15)}</button></div>`
+  if (productState.onboardingStep === 2) return `<div class="onboarding-panel"><div class="onboarding-copy"><p class="product-kicker">Steg 03 · Excel</p><h1>Börja med er Excel-fil</h1><p>Ladda upp filen ni redan använder. Flowly använder den som utgångspunkt för att bygga ert arbetsflöde.</p></div><label class="product-upload-zone" for="product-file-upload"><input id="product-file-upload" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" /><span class="upload-symbol">${icon('upload', 25)}</span><strong>Släpp din Excel-fil här</strong><small>eller välj fil från datorn</small><em>.xlsx / .xls</em></label><div class="product-upload-result" aria-live="polite"></div><button type="button" class="text-link onboarding-back" data-product-action="back-onboarding">Tillbaka</button></div>`
+  return `<div class="onboarding-panel onboarding-finished"><div class="onboarding-copy"><p class="product-kicker">Steg 04 · Konfigurera</p><h1>Analysen är klar.</h1><p>Flowly har skapat ett första utkast. Nu kan ni kontrollera fälten och göra arbetsflödet till ert.</p></div><div class="onboarding-summary"><span class="summary-icon">${icon('check', 22)}</span><div><strong>${escapeHtml(productState.analysis?.fileName || 'Excel-fil')}</strong><small>${productState.analysis?.columns.length || 0} kolumner · ${productState.analysis?.rowCount || 0} rader identifierade</small></div></div><button type="button" class="button button-primary onboarding-next">Öppna Workflow Builder ${icon('arrow', 15)}</button></div>`
+}
+
+const fieldPreviewValue = (field: WorkflowField, index: number) => {
+  if (field.type === 'Number') return '8'
+  if (field.type === 'Date') return '2026-09-09'
+  if (field.type === 'Status') return 'Väntar'
+  if (field.value) return field.value
+  if (index === 0) return 'Anna Andersson'
+  if (field.name === 'Projekt') return 'Projekt A'
+  return `Fyll i ${field.name.toLocaleLowerCase('sv-SE')}`
+}
+
+const builderView = () => {
+  if (productState.builderTab === 'workflow') return builderWorkflowView()
+  if (productState.builderTab === 'approvals') return approvalsView()
+  if (productState.builderTab === 'team') return teamView()
+  const fields = productState.fields.length ? productState.fields : (productState.analysis ? workflowFieldsFromAnalysis(productState.analysis) : [])
+  productState.fields = fields
+  const selected = fields[productState.selectedField] || fields[0]
+  const fieldRows = fields.map((field, index) => `<button type="button" class="field-row ${index === productState.selectedField ? 'is-selected' : ''}" data-field-index="${index}"><span><small>${escapeHtml(field.name)}</small><strong>${escapeHtml(fieldPreviewValue(field, index))}</strong></span><em>${field.required ? 'Obligatoriskt' : 'Valfritt'}</em></button>`).join('')
+  const editor = selected ? `<label>Fältnamn<input data-editor="name" value="${escapeHtml(selected.name)}" /></label><label>Typ<select data-editor="type"><option ${selected.type === 'Text' ? 'selected' : ''}>Text</option><option ${selected.type === 'Number' ? 'selected' : ''}>Number</option><option ${selected.type === 'Date' ? 'selected' : ''}>Date</option><option ${selected.type === 'Status' ? 'selected' : ''}>Status</option></select></label><label class="toggle-label">Obligatoriskt <button type="button" class="toggle ${selected.required ? 'is-on' : ''}" data-toggle-required><i></i></button></label><button type="button" class="button button-dark button-full" data-product-action="save-field">Spara fält</button><button type="button" class="remove-field" data-product-action="remove-field">Ta bort fält</button>` : '<p>Välj ett fält i formuläret för att redigera det.</p>'
+  return `<div class="product-layout"><div class="builder-sidebar"><p class="product-kicker">Workflow Builder</p><h2>${escapeHtml(productState.topic || 'Tidrapportering')}</h2><nav><button class="is-active" type="button">${icon('clipboard', 15)} Formulär</button><button type="button" data-builder-tab="workflow">${icon('workflow', 15)} Arbetsflöde</button><button type="button" data-builder-tab="approvals">${icon('check', 15)} Godkännanden</button><button type="button" data-builder-tab="team">${icon('users', 15)} Användare</button></nav><div class="builder-source">${icon('file', 15)}<span><small>Byggt från</small>${escapeHtml(productState.analysis?.fileName || 'Excel-fil')}</span></div></div><div class="builder-main">${productHeader('Formulär', 'Kontrollera fälten Flowly hittade i er Excel-fil.')}${productState.saved ? '<div class="save-toast">✓ Arbetsflödet sparades som utkast.</div>' : ''}<div class="builder-columns"><section class="builder-canvas"><div class="builder-canvas-head"><div><span class="status-pill draft">Utkast</span><h2>${escapeHtml(productState.topic || 'Tidrapportering')}</h2><p>Det här är formuläret som teamet kommer att använda.</p></div><div class="view-toggle"><button type="button" class="is-active">Redigera</button><button type="button" data-product-action="preview">Förhandsvisning</button></div></div><div class="form-preview-card">${fieldRows}<button type="button" class="button button-primary button-full submit-preview">Skicka rapport ${icon('arrow', 15)}</button></div></section><aside class="field-editor"><p class="product-kicker">Fältinställningar</p><h3>${escapeHtml(selected?.name || 'Välj ett fält')}</h3>${editor}</aside></div><div class="builder-footer"><button type="button" class="button button-light" data-product-action="save-workflow">Spara arbetsflöde</button><button type="button" class="button button-primary" data-product-action="publish-workflow">${productState.published ? 'Aktivt arbetsflöde' : 'Publicera arbetsflöde'} ${icon('arrow', 15)}</button></div></div></div>`
+}
+
+const builderWorkflowView = () => `<div class="product-layout"><div class="builder-sidebar"><p class="product-kicker">Workflow Builder</p><h2>${escapeHtml(productState.topic || 'Tidrapportering')}</h2><nav><button type="button" data-builder-tab="form">${icon('clipboard', 15)} Formulär</button><button class="is-active" type="button" data-builder-tab="workflow">${icon('workflow', 15)} Arbetsflöde</button><button type="button" data-builder-tab="approvals">${icon('check', 15)} Godkännanden</button><button type="button" data-builder-tab="team">${icon('users', 15)} Användare</button></nav></div><div class="builder-main">${productHeader('Arbetsflöde', 'Så här rör sig en rapport genom processen.') }<div class="workflow-builder-track">${['Skapa rapport', 'Skickas', 'Chef granskar', 'Godkänd / Avvisad', 'Klar'].map((step, index) => `<div class="workflow-builder-node"><span>${String(index + 1).padStart(2, '0')}</span><strong>${step}</strong><small>${index === 0 ? 'Teamet fyller i formuläret' : index === 2 ? `Godkänns av ${escapeHtml(productState.approver)}` : index === 4 ? productState.afterApproval : 'Nästa steg i flödet'}</small></div>${index < 4 ? '<i>↓</i>' : ''}`).join('')}</div><div class="builder-footer"><button type="button" class="button button-light" data-builder-tab="form">Tillbaka till formulär</button><button type="button" class="button button-primary" data-product-action="save-workflow">Spara arbetsflöde</button></div></div></div>`
+
+const workflowCard = () => `<article class="workflow-product-card"><div class="workflow-card-top"><span class="card-icon">${icon('clock', 16)}</span><span class="status-pill ${productState.published ? 'active' : 'draft'}">${productState.published ? 'Aktiv' : 'Utkast'}</span></div><h3>${escapeHtml(productState.topic || 'Tidrapportering')}</h3><p>${productState.published ? productState.reports.length + ' rapporter' : 'Bygg vidare från er Excel-fil'}</p><small>Senast uppdaterad idag</small><div class="workflow-card-actions"><button type="button" class="button button-dark button-small" data-product-action="use-workflow">Använd</button><button type="button" class="text-link" data-product-action="edit-workflow">Redigera ${icon('arrow', 14)}</button></div></article>`
+
+const dashboardView = () => `<div class="product-page">${productHeader('Översikt', 'En lugn plats för era arbetsflöden och nästa steg.')}<div class="metric-grid"><div><span class="metric-icon">${icon('workflow', 16)}</span><strong>${productState.published ? '1' : '0'}</strong><small>Aktiva arbetsflöden</small></div><div><span class="metric-icon amber">${icon('clock', 16)}</span><strong>${productState.reports.filter((report) => report.status === 'Väntar').length}</strong><small>Väntar på godkännande</small></div><div><span class="metric-icon blue">${icon('chart', 16)}</span><strong>${productState.reports.length}</strong><small>Rapporter denna vecka</small></div><div><span class="metric-icon sage">${productState.reports.length ? '92%' : '—'}</span><strong>${productState.reports.length ? '92%' : '—'}</strong><small>Godkända i tid</small></div></div><div class="product-section-heading"><div><p class="product-kicker">Arbetsflöden</p><h2>Det ni arbetar med</h2></div><button type="button" class="button button-primary button-small" data-product-action="new-workflow">${icon('plus', 14)} Skapa arbetsflöde</button></div><div class="workflow-product-grid">${productState.analysis ? workflowCard() : `<div class="empty-product-state"><span class="empty-state-icon">${icon('upload', 22)}</span><h3>Inga arbetsflöden ännu</h3><p>Börja med en Excel-fil och skapa ert första arbetsflöde.</p><button type="button" class="button button-primary" data-product-action="new-workflow">Skapa arbetsflöde ${icon('arrow', 15)}</button></div>`}</div><div class="product-section-heading"><div><p class="product-kicker">Senaste aktivitet</p><h2>Rapporter</h2></div><button type="button" class="text-link" data-product-screen="approvals">Visa alla ${icon('arrow', 14)}</button></div>${reportsTable()}</div>`
+
+const reportsTable = () => productState.reports.length ? `<div class="reports-table"><div class="reports-table-head"><span>Rapport</span><span>Status</span><span>Åtgärd</span></div>${productState.reports.map((report) => `<div class="reports-table-row"><div><strong>${escapeHtml(report.values.Namn || report.values.Name || 'Rapport')}</strong><small>${escapeHtml(productState.topic || 'Arbetsflöde')} · ${escapeHtml(report.values.Datum || 'Idag')}</small></div><span class="status-pill ${report.status === 'Godkänd' ? 'active' : report.status === 'Avvisad' ? 'rejected' : 'waiting'}">${report.status}</span><button type="button" class="text-link" data-product-screen="approvals">Öppna ${icon('arrow', 13)}</button></div>`).join('')}</div>` : '<div class="quiet-empty">Inga inskickade rapporter ännu.</div>'
+
+const workflowsView = () => `<div class="product-page">${productHeader('Mina arbetsflöden', 'Bygg, publicera och använd era processer på ett ställe.')}<div class="workflow-product-grid">${productState.analysis ? workflowCard() : `<div class="empty-product-state"><span class="empty-state-icon">${icon('workflow', 22)}</span><h3>Inga arbetsflöden ännu</h3><p>Skapa ert första flöde från en Excel-fil.</p><button type="button" class="button button-primary" data-product-action="new-workflow">Skapa arbetsflöde</button></div>`}</div></div>`
+
+const useWorkflowView = () => {
+  const fields = productState.fields.filter((field) => field.type !== 'Status')
+  return `<div class="product-page use-page">${productHeader(productState.topic || 'Tidrapportering', 'Fyll i rapporten och skicka den till nästa steg i processen.')}<div class="use-layout"><section class="use-form-card"><div class="use-form-heading"><span class="status-pill active">Aktivt arbetsflöde</span><h2>${escapeHtml(productState.topic || 'Veckans tidrapport')}</h2><p>Alla obligatoriska fält behöver fyllas i.</p></div><form class="workflow-use-form">${fields.map((field, index) => `<label>${escapeHtml(field.name)}${field.type === 'Date' ? `<input name="${escapeHtml(field.name)}" type="date" value="2026-09-09" ${field.required ? 'required' : ''} />` : field.type === 'Number' ? `<input name="${escapeHtml(field.name)}" type="number" placeholder="8" ${field.required ? 'required' : ''} />` : field.name.toLocaleLowerCase('sv-SE').includes('projekt') ? `<select name="${escapeHtml(field.name)}" ${field.required ? 'required' : ''}><option value="">Välj projekt</option><option>Projekt A</option><option>Projekt B</option></select>` : `<input name="${escapeHtml(field.name)}" type="text" placeholder="${index === 0 ? 'Anna Andersson' : 'Fyll i ' + field.name.toLocaleLowerCase('sv-SE')}" ${field.required ? 'required' : ''} />`}</label>`).join('')}<p class="form-error" aria-live="polite"></p><button type="submit" class="button button-primary">Skicka rapport ${icon('arrow', 15)}</button></form></section><aside class="process-rail"><p class="product-kicker">Arbetsflöde</p><h3>Vad händer sedan?</h3>${['Skapa rapport', 'Skickas', 'Chef granskar', 'Godkänd / Avvisad', 'Klar'].map((step, index) => `<div class="process-step ${index === 0 ? 'is-current' : ''}"><b>${String(index + 1).padStart(2, '0')}</b><span>${step}</span></div>`).join('')}</aside></div></div>`
+}
+
+const approvalRows = () => productState.reports.map((report) => {
+  const actions = report.status === 'Väntar'
+    ? `<button type="button" class="approve-row" data-report-action="approve" data-report-id="${report.id}">Godkänn</button><button type="button" class="reject-row" data-report-action="reject" data-report-id="${report.id}">Avvisa</button>`
+    : '<small>Inga åtgärder</small>'
+  const statusClass = report.status === 'Godkänd' ? 'active' : report.status === 'Avvisad' ? 'rejected' : 'waiting'
+  return `<article class="approval-product-card"><div class="approval-person"><span class="preview-avatar">${escapeHtml((report.values.Namn || 'AA').slice(0, 2).toUpperCase())}</span><div><strong>${escapeHtml(report.values.Namn || 'Rapport')}</strong><small>${escapeHtml(productState.topic || 'Tidrapport')} · ${escapeHtml(report.values.Projekt || 'Projekt A')}</small></div></div><span class="status-pill ${statusClass}">${report.status}</span><div class="approval-actions-product">${actions}</div></article>`
+}).join('')
+
+const approvalsView = () => {
+  const approverOptions = ['Chef', 'Anna Andersson', 'Erik Johansson', 'Team Lead'].map((name) => `<option ${productState.approver === name ? 'selected' : ''}>${name}</option>`).join('')
+  const empty = '<div class="empty-product-state"><span class="empty-state-icon">✓</span><h3>Inget väntar just nu</h3><p>När teamet skickar in rapporter visas de här.</p></div>'
+  return `<div class="product-page">${productHeader('Godkännanden', 'Granska rapporter som väntar på nästa steg.')}<div class="approval-config"><div><p class="product-kicker">Godkännande</p><h2>Vem godkänner?</h2><select data-approval="approver">${approverOptions}</select></div><div><p class="product-kicker">Efter godkännande</p><h2>Vad händer sedan?</h2><label><input type="radio" name="after-approval" value="Markera som klar" ${productState.afterApproval === 'Markera som klar' ? 'checked' : ''} /> Markera som klar</label><label><input type="radio" name="after-approval" value="Exportera" ${productState.afterApproval === 'Exportera' ? 'checked' : ''} /> Exportera</label><label><input type="radio" name="after-approval" value="Skicka vidare" ${productState.afterApproval === 'Skicka vidare' ? 'checked' : ''} /> Skicka vidare</label></div></div><div class="product-section-heading"><div><p class="product-kicker">Inkorg</p><h2>Rapporter att granska</h2></div><button type="button" class="button button-light button-small" data-product-action="export">Exportera till Excel</button></div><div class="approval-list">${productState.reports.length ? approvalRows() : empty}</div></div>`
+}
+
+const teamView = () => `<div class="product-page">${productHeader('Team', 'Bestäm vilka som ska kunna använda arbetsflödet.')}<div class="product-section-heading"><div><p class="product-kicker">3 medlemmar</p><h2>Ert team</h2></div><button type="button" class="button button-primary button-small" data-product-action="invite">${icon('plus', 14)} Bjud in medlem</button></div><div class="team-list">${[['Anna Andersson', 'Admin', 'peach'], ['Erik Johansson', 'Manager', 'blue'], ['Sara Nilsson', 'Member', 'sage']].map(([name, role, tone]) => `<div><span>${av(name.split(' ').map((part) => part[0]).join(''), tone)}</span><strong>${name}<small>${role}</small></strong><span class="team-access">Aktiv</span></div>`).join('')}</div></div>`
+
+const settingsView = () => `<div class="product-page">${productHeader('Inställningar', 'Grundläggande inställningar för ert workspace.')}<section class="settings-card"><p class="product-kicker">Workspace</p><h2>Nordmark AB</h2><label>Workspace-namn<input value="Nordmark AB" /></label><label>Standardgodkännare<select><option>Chef</option><option>Team Lead</option></select></label><button type="button" class="button button-dark">Spara inställningar</button></section></div>`
+
+const productContent = () => {
+  if (productState.screen === 'builder') return builderView()
+  if (productState.screen === 'use') return useWorkflowView()
+  if (productState.screen === 'approvals') return approvalsView()
+  if (productState.screen === 'workflows') return workflowsView()
+  if (productState.screen === 'team') return teamView()
+  if (productState.screen === 'settings') return settingsView()
+  return dashboardView()
+}
+
+const productShell = () => productState.screen === 'onboarding' ? `<div class="onboarding-shell"><div class="onboarding-top"><a class="brand" href="#top"><span class="brand-mark">f</span>flowly</a><button type="button" class="text-link" data-product-action="logout">Logga ut</button></div>${onboardingSteps()}${onboardingView()}</div>` : `<div class="product-shell">${productSidebar()}<main class="product-main">${productContent()}</main></div>`
+
 const steps = () => `
   <section class="story-section steps-section" id="upload">
     <div class="section-intro split reveal">
@@ -333,12 +567,12 @@ const steps = () => `
         <h3>Ladda upp</h3>
         <p>Ladda upp Excel-filen ni redan använder.</p>
         <label class="upload-zone" for="file-upload">
-          <input id="file-upload" type="file" accept=".xlsx,.xls,.csv" />
+          <input id="file-upload" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" />
           <span class="upload-symbol">${icon('upload', 22)}</span>
-          <strong class="upload-label">Släpp din .xlsx-fil här</strong>
-          <small>eller klicka för att välja</small>
+          <strong class="upload-label">Släpp din Excel-fil här</strong>
+          <small>eller välj fil från datorn</small>
         </label>
-        <small class="upload-note">Börja med filen ni redan använder.</small>
+        <small class="upload-note">.xlsx eller .xls · Börja med arbetsflödet ni redan använder.</small>
       </article>
       <article class="step-card reveal">
         <span class="step-num">02</span>
@@ -362,6 +596,7 @@ const steps = () => `
         </div>
       </article>
     </div>
+    ${uploadResult()}
   </section>
 `
 
@@ -634,6 +869,179 @@ const footer = () => `
 
 const app = document.querySelector<HTMLDivElement>('#app')!
 app.innerHTML = `${header()}<main>${hero()}${chaos()}${transform()}${steps()}${dashboard()}${useCases()}${integration()}${pricing()}${roles()}${faq()}${cta()}</main>${footer()}`
+app.insertAdjacentHTML('beforeend', authModal())
+
+const authOverlay = () => document.querySelector<HTMLElement>('#auth-overlay')
+const renderProduct = () => {
+  document.body.classList.add('is-product-mode')
+  app.innerHTML = productShell()
+}
+
+const openAuth = (mode: 'signup' | 'login' = 'signup') => {
+  const overlay = authOverlay()
+  if (!overlay) return
+  overlay.hidden = false
+  overlay.dataset.mode = mode
+  overlay.querySelectorAll<HTMLButtonElement>('[data-auth-mode]').forEach((tab) => tab.classList.toggle('is-active', tab.dataset.authMode === mode))
+  const title = overlay.querySelector('#auth-title')
+  const description = overlay.querySelector('.auth-description')
+  const nameField = overlay.querySelector<HTMLElement>('.name-field')
+  const submit = overlay.querySelector<HTMLButtonElement>('[data-auth-submit]')
+  const forgot = overlay.querySelector<HTMLElement>('.forgot-link')
+  if (title) title.textContent = mode === 'signup' ? 'Skapa ditt Flowly-konto' : 'Logga in i Flowly'
+  if (description) description.textContent = mode === 'signup' ? 'Skapa ett gratis konto och bygg ert första arbetsflöde.' : 'Fortsätt där ni slutade och öppna ert workspace.'
+  if (nameField) nameField.hidden = mode === 'login'
+  if (submit) submit.innerHTML = `${mode === 'signup' ? 'Skapa konto' : 'Logga in'} ${icon('arrow', 15)}`
+  if (forgot) forgot.hidden = mode === 'signup'
+}
+
+const closeAuth = () => { const overlay = authOverlay(); if (overlay) overlay.hidden = true }
+
+const beginOnboarding = () => {
+  productState.screen = 'onboarding'
+  productState.onboardingStep = 1
+  productState.topic = ''
+  productState.analysis = undefined
+  productState.fields = []
+  productState.saved = false
+  productState.published = false
+  persistProductState()
+  closeAuth()
+  renderProduct()
+}
+
+const handleProductFile = async (file: File | undefined) => {
+  const result = document.querySelector<HTMLElement>('.product-upload-result')
+  if (!file || !result) return
+  const extension = file.name.toLocaleLowerCase('sv-SE').split('.').pop()
+  if (extension !== 'xlsx' && extension !== 'xls') {
+    result.innerHTML = renderAnalysisError('Den filtypen stöds inte', 'Ladda upp en .xlsx- eller .xls-fil.')
+    return
+  }
+  result.innerHTML = renderAnalysisLoading(file.name)
+  try {
+    const [analysis] = await Promise.all([analyzeExcelFile(file), new Promise((resolve) => window.setTimeout(resolve, reduceMotion ? 0 : 850))])
+    productState.analysis = analysis
+    productState.fields = workflowFieldsFromAnalysis(analysis)
+    productState.onboardingStep = 4
+    persistProductState()
+    renderProduct()
+  } catch (error) {
+    const emptyFile = error instanceof Error && error.message === 'EMPTY_WORKBOOK'
+    result.innerHTML = renderAnalysisError(emptyFile ? 'Vi hittade inga data att analysera.' : 'Vi kunde inte läsa filen', emptyFile ? 'Ladda upp en Excel-fil som innehåller ett arbetsflöde eller en tabell.' : 'Kontrollera att filen är en giltig Excel-fil och försök igen.')
+  }
+}
+
+const exportReports = () => {
+  const rows = productState.reports.map((report) => ({ ...report.values, Status: report.status }))
+  const sheet = XLSX.utils.json_to_sheet(rows.length ? rows : [{ Status: 'Inga rapporter ännu' }])
+  const book = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(book, sheet, productState.topic || 'Flowly')
+  XLSX.writeFile(book, `${(productState.topic || 'flowly-workflow').toLocaleLowerCase('sv-SE').replace(/\s+/g, '-')}.xlsx`)
+}
+
+document.addEventListener('click', (event) => {
+  const target = event.target as HTMLElement
+  const cta = target.closest<HTMLAnchorElement>('a[href="#cta"], a[href="#faq"]')
+  if (cta) {
+    event.preventDefault()
+    openAuth(cta.getAttribute('href') === '#faq' ? 'login' : 'signup')
+  }
+  if (target.closest('.auth-close')) closeAuth()
+  const authTab = target.closest<HTMLButtonElement>('[data-auth-mode]')
+  if (authTab) openAuth((authTab.dataset.authMode as 'signup' | 'login') || 'signup')
+})
+
+document.querySelector<HTMLFormElement>('[data-auth-form]')?.addEventListener('submit', (event) => {
+  event.preventDefault()
+  const form = event.currentTarget as HTMLFormElement
+  const overlay = authOverlay()
+  const data = new FormData(form)
+  const mode = overlay?.dataset.mode || 'signup'
+  const name = String(data.get('name') || '').trim()
+  const email = String(data.get('email') || '').trim()
+  const password = String(data.get('password') || '')
+  const error = overlay?.querySelector<HTMLElement>('.auth-error')
+  if (password.length < 8) { if (error) error.textContent = 'Lösenordet behöver vara minst 8 tecken.'; return }
+  if (mode === 'signup' && !name) { if (error) error.textContent = 'Fyll i ert namn för att fortsätta.'; return }
+  localStorage.setItem('flowly-user-name', name || 'Anna Andersson')
+  localStorage.setItem('flowly-user-email', email)
+  localStorage.setItem('flowly-authenticated', 'true')
+  beginOnboarding()
+})
+
+app.addEventListener('change', (event) => {
+  const target = event.target as HTMLInputElement | HTMLSelectElement
+  if (target.id === 'product-file-upload' && target instanceof HTMLInputElement) void handleProductFile(target.files?.[0])
+  if (target.matches('[data-approval="approver"]')) { productState.approver = target.value; persistProductState() }
+  if (target.matches('input[name="after-approval"]')) { productState.afterApproval = target.value; persistProductState() }
+})
+
+app.addEventListener('dragover', (event) => {
+  const zone = (event.target as HTMLElement).closest('.product-upload-zone')
+  if (zone) { event.preventDefault(); zone.classList.add('is-dragging') }
+})
+app.addEventListener('dragleave', (event) => (event.target as HTMLElement).closest('.product-upload-zone')?.classList.remove('is-dragging'))
+app.addEventListener('drop', (event) => {
+  const zone = (event.target as HTMLElement).closest('.product-upload-zone')
+  if (!zone) return
+  event.preventDefault()
+  zone.classList.remove('is-dragging')
+  void handleProductFile((event as DragEvent).dataTransfer?.files?.[0])
+})
+
+app.addEventListener('submit', (event) => {
+  const form = event.target as HTMLFormElement
+  if (!form.matches('.workflow-use-form')) return
+  event.preventDefault()
+  if (!form.checkValidity()) { form.querySelector<HTMLElement>('.form-error')!.textContent = 'Fyll i alla obligatoriska fält innan rapporten skickas.'; form.reportValidity(); return }
+  const values = Object.fromEntries(new FormData(form).entries()) as Record<string, string>
+  productState.reports.push({ id: Date.now(), values, status: 'Väntar' })
+  productState.screen = 'approvals'
+  persistProductState()
+  renderProduct()
+})
+
+app.addEventListener('click', (event) => {
+  const target = event.target as HTMLElement
+  const screenButton = target.closest<HTMLElement>('[data-product-screen]')
+  if (screenButton) { productState.screen = screenButton.dataset.productScreen as ProductState['screen']; persistProductState(); renderProduct(); return }
+  const topic = target.closest<HTMLElement>('[data-topic]')
+  if (topic) { productState.topic = topic.dataset.topic || ''; renderProduct(); return }
+  if (target.closest('.onboarding-next')) {
+    if (productState.onboardingStep === 1) { productState.customTopic = document.querySelector<HTMLTextAreaElement>('.custom-topic')?.value.trim() || ''; productState.onboardingStep = 2; persistProductState(); renderProduct() }
+    else if (productState.onboardingStep === 4) { productState.screen = 'builder'; persistProductState(); renderProduct() }
+    return
+  }
+  const field = target.closest<HTMLElement>('[data-field-index]')
+  if (field) { productState.selectedField = Number(field.dataset.fieldIndex); renderProduct(); return }
+  const builderTab = target.closest<HTMLElement>('[data-builder-tab]')
+  if (builderTab) { productState.builderTab = (builderTab.dataset.builderTab as ProductState['builderTab']) || 'form'; persistProductState(); renderProduct(); return }
+  const action = target.closest<HTMLElement>('[data-product-action]')?.dataset.productAction
+  if (action === 'back-onboarding') { productState.onboardingStep = 1; renderProduct(); return }
+  if (action === 'new-workflow') { beginOnboarding(); return }
+  if (action === 'edit-workflow') { productState.screen = 'builder'; renderProduct(); return }
+  if (action === 'use-workflow') { productState.screen = 'use'; renderProduct(); return }
+  if (action === 'save-field') {
+    const selected = productState.fields[productState.selectedField]
+    const nameInput = document.querySelector<HTMLInputElement>('[data-editor="name"]')
+    const typeInput = document.querySelector<HTMLSelectElement>('[data-editor="type"]')
+    if (selected && nameInput && typeInput) { selected.name = nameInput.value.trim() || selected.name; selected.type = typeInput.value; persistProductState(); renderProduct() }
+    return
+  }
+  if (action === 'preview') { productState.screen = 'use'; persistProductState(); renderProduct(); return }
+  if (target.closest('[data-toggle-required]')) { const selected = productState.fields[productState.selectedField]; if (selected) { selected.required = !selected.required; persistProductState(); renderProduct() } return }
+  if (action === 'remove-field') { productState.fields.splice(productState.selectedField, 1); productState.selectedField = Math.max(0, productState.selectedField - 1); persistProductState(); renderProduct(); return }
+  if (action === 'save-workflow') { productState.saved = true; persistProductState(); renderProduct(); return }
+  if (action === 'publish-workflow') {
+    if (window.confirm('Redo att publicera? Efter publicering kan teammedlemmar börja använda arbetsflödet.')) { productState.published = true; productState.saved = true; persistProductState(); renderProduct() }
+    return
+  }
+  if (action === 'export') { exportReports(); return }
+  if (action === 'logout') { localStorage.removeItem('flowly-authenticated'); window.location.reload(); return }
+  const reportAction = target.closest<HTMLElement>('[data-report-action]')
+  if (reportAction) { const report = productState.reports.find((item) => item.id === Number(reportAction.dataset.reportId)); if (report) report.status = reportAction.dataset.reportAction === 'approve' ? 'Godkänd' : 'Avvisad'; persistProductState(); renderProduct() }
+})
 
 const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
 if (reduceMotion) document.documentElement.classList.add('reduce-motion')
@@ -713,9 +1121,57 @@ if (!reduceMotion && demo) {
 const uploadZone = document.querySelector<HTMLLabelElement>('.upload-zone')
 const uploadInput = document.querySelector<HTMLInputElement>('#file-upload')
 const uploadLabel = document.querySelector<HTMLElement>('.upload-label')
+const uploadResultEl = document.querySelector<HTMLElement>('#upload-result')
+let analysisRun = 0
+
+const showUploadResult = (content: string) => {
+  if (!uploadResultEl) return
+  uploadResultEl.hidden = false
+  uploadResultEl.innerHTML = content
+  uploadResultEl.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'nearest' })
+}
+
+const resetUpload = () => {
+  analysisRun += 1
+  if (uploadInput) uploadInput.value = ''
+  if (uploadLabel) uploadLabel.textContent = 'Släpp din Excel-fil här'
+  if (uploadResultEl) {
+    uploadResultEl.hidden = true
+    uploadResultEl.innerHTML = ''
+  }
+}
+
+const handleUpload = async (file: File | undefined) => {
+  if (!file) return
+  const currentRun = ++analysisRun
+  const extension = file.name.toLocaleLowerCase('sv-SE').split('.').pop()
+  if (extension !== 'xlsx' && extension !== 'xls') {
+    showUploadResult(renderAnalysisError('Den filtypen stöds inte', 'Ladda upp en .xlsx- eller .xls-fil.'))
+    return
+  }
+
+  if (uploadLabel) uploadLabel.textContent = file.name
+  showUploadResult(renderAnalysisLoading(file.name))
+
+  try {
+    const [analysis] = await Promise.all([
+      analyzeExcelFile(file),
+      new Promise((resolve) => window.setTimeout(resolve, reduceMotion ? 0 : 950)),
+    ])
+    if (currentRun !== analysisRun) return
+    showUploadResult(renderAnalysis(analysis))
+  } catch (error) {
+    if (currentRun !== analysisRun) return
+    const emptyFile = error instanceof Error && error.message === 'EMPTY_WORKBOOK'
+    showUploadResult(renderAnalysisError(
+      emptyFile ? 'Vi hittade inga data att analysera.' : 'Vi kunde inte läsa filen',
+      emptyFile ? 'Ladda upp en Excel-fil som innehåller ett arbetsflöde eller en tabell.' : 'Kontrollera att filen är en giltig Excel-fil och försök igen.',
+    ))
+  }
+}
 
 uploadInput?.addEventListener('change', () => {
-  if (uploadInput.files?.[0] && uploadLabel) uploadLabel.textContent = uploadInput.files[0].name
+  void handleUpload(uploadInput.files?.[0])
 })
 
 ;['dragenter', 'dragover'].forEach((type) => {
@@ -732,7 +1188,19 @@ uploadInput?.addEventListener('change', () => {
 })
 uploadZone?.addEventListener('drop', (event) => {
   const file = (event as DragEvent).dataTransfer?.files?.[0]
-  if (file && uploadLabel) uploadLabel.textContent = file.name
+  void handleUpload(file)
+})
+
+uploadResultEl?.addEventListener('click', (event) => {
+  const target = event.target as HTMLElement
+  if (target.closest('.analysis-retry, .analysis-close, .analysis-another')) {
+    resetUpload()
+    uploadInput?.click()
+  }
+  if (target.closest('.create-workflow')) {
+    const cta = target.closest('.analysis-cta')
+    if (cta) cta.innerHTML = '<div class="analysis-message success-message"><span class="message-icon">✓</span><div><strong>Flowly är snart redo för nästa steg.</strong><p>Vi har sparat ingen fil. Den här förhandsvisningen visar hur arbetsflödet kan börja.</p></div></div>'
+  }
 })
 
 const pendingCount = document.querySelector('[data-pending-count]')
