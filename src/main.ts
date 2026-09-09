@@ -75,6 +75,7 @@ const header = () => `
       <button class="icon-button mobile-menu-trigger" type="button" aria-label="Öppna meny">${icon('menu')}</button>
     </div>
   </header>
+  <a class="mobile-sticky-cta" href="#upload">Testa gratis ${icon('arrow', 15)}</a>
   <div class="mobile-menu" aria-hidden="true">
     <button class="icon-button mobile-menu-close" type="button" aria-label="Stäng meny">${icon('close')}</button>
     ${navMap.map(([label, id]) => `<a href="#${id}">${label}</a>`).join('')}
@@ -243,6 +244,13 @@ const chaos = () => `
         </div>
       </div>
     </div>
+    <div class="section-next-step reveal">
+      <div>
+        <strong>Känner ni igen er?</strong>
+        <p>Börja med det arbetsflöde som skapar mest manuellt arbete.</p>
+      </div>
+      <a class="text-link" href="#upload">Visa hur Flowly löser det ${icon('arrow', 16)} </a>
+    </div>
   </section>
 `
 
@@ -327,9 +335,10 @@ const steps = () => `
         <label class="upload-zone" for="file-upload">
           <input id="file-upload" type="file" accept=".xlsx,.xls,.csv" />
           <span class="upload-symbol">${icon('upload', 22)}</span>
-          <strong class="upload-label">Släpp din Excel-fil här</strong>
+          <strong class="upload-label">Släpp din .xlsx-fil här</strong>
           <small>eller klicka för att välja</small>
         </label>
+        <small class="upload-note">Börja med filen ni redan använder.</small>
       </article>
       <article class="step-card reveal">
         <span class="step-num">02</span>
@@ -361,7 +370,7 @@ const dashboard = () => `
     <div class="section-intro centered reveal">
       <p class="eyebrow">04</p>
       <h2>Nu arbetar teamet i <em>en riktig app.</em></h2>
-      <p>Från första inskick till godkänd rapport. Statusen är synlig för alla — inte gömd i en mejltråd.</p>
+      <p>Från Excel-rader till ett arbetsflöde hela teamet kan använda. Statusen är synlig för alla — inte gömd i en mejltråd.</p>
     </div>
     <div class="product-frame reveal" id="product-demo">
       <div class="frame-bar">
@@ -496,11 +505,11 @@ const integration = () => `
     <div class="difference-copy reveal">
       <p class="eyebrow">06</p>
       <h2>Ni behöver inte byta <em>era system.</em></h2>
-      <p>Flowly är byggt för en sak: att göra era manuella arbetsflöden enklare. Excel kan fortfarande vara start och slut.</p>
+      <p><strong>Nej. Flowly är inte ett nytt ERP-system.</strong> Vi strukturerar processerna som idag hamnar mellan Excel, mejl, Teams och era befintliga system.</p>
       <ul>
-        <li><span>${icon('check', 14)}</span>Kom igång på minuter</li>
-        <li><span>${icon('check', 14)}</span>Ingen utvecklare behövs</li>
-        <li><span>${icon('check', 14)}</span>Fungerar med era befintliga arbetsflöden</li>
+        <li><span>${icon('check', 14)}</span>Börja med Excel-filen ni redan har</li>
+        <li><span>${icon('check', 14)}</span>Rätt person ser rätt saker</li>
+        <li><span>${icon('check', 14)}</span>Behåll exporten till Excel</li>
       </ul>
     </div>
     <div class="export-frame reveal">
@@ -548,6 +557,10 @@ const pricing = () => `
         <a class="price-link" href="#cta">Prata med oss ${icon('arrow', 14)}</a>
       </article>
     </div>
+    <div class="pricing-next-step reveal">
+      <div><strong>Börja med ett arbetsflöde.</strong><span>Testa Flowly och se om det passar processen ni redan har.</span></div>
+      <a class="button button-primary" href="#upload">Testa Flowly gratis ${icon('arrow', 16)}</a>
+    </div>
   </section>
 `
 
@@ -576,9 +589,11 @@ const faq = () => `
       ${[
         ['Måste vi sluta använda Excel?', 'Nej. Flowly kan börja med de Excel-filer ni redan använder.'],
         ['Behöver vi kunna programmera?', 'Nej. Ni beskriver processen på vanlig svenska, sedan hjälper Flowly er vidare.'],
+        ['Hur lång tid tar det att komma igång?', 'Det beror på arbetsflödet. Börja med en fil och beskriv hur ni använder den, så ser ni snabbt vad som behöver struktureras.'],
+        ['Måste vi byta vårt ERP-system?', 'Nej. Flowly är inte ett nytt ERP-system utan ett enklare lager för manuella processer mellan era befintliga system.'],
         ['Kan vi exportera data till Excel?', 'Ja. Era data är era och kan exporteras tillbaka till Excel när ni behöver.'],
         ['Kan flera personer använda samma arbetsflöde?', 'Ja, med olika roller och behörigheter för varje steg i processen.'],
-        ['Kan Flowly ersätta vårt ERP-system?', 'Nej, och det är inte meningen. Flowly gör de manuella processerna runt era befintliga system enklare.'],
+        ['Vad händer om Flowly inte passar vårt arbetsflöde?', 'Då har ni fått en tydligare bild av processen utan att behöva byta ut era befintliga system.'],
       ].map(([q, a], i) => `<details ${i === 0 ? 'open' : ''}><summary>${q}<span>+</span></summary><p>${a}</p></details>`).join('')}
     </div>
   </section>
@@ -588,12 +603,13 @@ const cta = () => `
   <section class="final-cta" id="cta">
     <div class="cta-inner reveal">
       <p class="eyebrow">07</p>
-      <h2>Börja med en Excel-fil.</h2>
-      <p>Har ni ett arbetsflöde som borde vara en app? Ladda upp filen. Vi tar första steget tillsammans.</p>
+      <h2>Har ni en Excel-fil som borde vara en app?</h2>
+      <p>Börja med filen ni redan använder. Se hur mycket enklare arbetsflödet kan bli.</p>
       <div class="hero-actions">
         <a class="button button-light" href="#upload">Testa Flowly gratis ${icon('arrow', 16)}</a>
-        <a class="text-link light-link" href="#exempel">Se problemet vi löser <span>${icon('arrow', 16)}</span></a>
+        <a class="text-link light-link" href="#produkt">Se exempel <span>${icon('arrow', 16)}</span></a>
       </div>
+      <small class="cta-note">Ingen kod. Ingen lång implementation.</small>
     </div>
   </section>
 `
