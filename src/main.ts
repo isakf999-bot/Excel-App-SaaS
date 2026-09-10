@@ -425,6 +425,7 @@ type FlowlyWorkspace = {
 }
 type FlowlyApp = {
   id: string
+  ownerId: string
   workspaceId: string
   name: string
   description: string
@@ -434,12 +435,15 @@ type FlowlyApp = {
   sourceFileName: string
   config: {
     topic: string
+    customTopic: string
     fields: WorkflowField[]
     approver: string
     afterApproval: string
     published: boolean
     saved: boolean
     analysis?: ExcelAnalysis
+    reports: Report[]
+    builderTab: 'form' | 'workflow' | 'approvals' | 'team'
   }
 }
 type FlowlyStore = {
@@ -465,28 +469,59 @@ type ProductState = {
   currentAppId: string | null
   userName: string
   workspaceName: string
+  authReady: boolean
+  appsStatus: 'idle' | 'loading' | 'ready' | 'error'
 }
 
 const FLOWLY_STORE_KEY = 'flowly-store-v1'
-const FLOWLY_PRODUCT_STATE_KEY = 'flowly-product-state'
+
+const emptyStore = (): FlowlyStore => ({ users: [], workspaces: [], apps: [], session: { userId: null } })
+
+const migrateApp = (app: FlowlyApp, workspaces: FlowlyWorkspace[]): FlowlyApp => {
+  const workspace = workspaces.find((entry) => entry.id === app.workspaceId)
+  return {
+    ...app,
+    ownerId: app.ownerId || workspace?.ownerId || '',
+    config: {
+      topic: app.config?.topic || app.name,
+      customTopic: app.config?.customTopic || '',
+      fields: Array.isArray(app.config?.fields) ? app.config.fields : [],
+      approver: app.config?.approver || 'Chef',
+      afterApproval: app.config?.afterApproval || 'Markera som klar',
+      published: Boolean(app.config?.published),
+      saved: Boolean(app.config?.saved),
+      analysis: app.config?.analysis,
+      reports: Array.isArray(app.config?.reports) ? app.config.reports : [],
+      builderTab: app.config?.builderTab || 'form',
+    },
+  }
+}
 
 const readFlowlyStore = (): FlowlyStore => {
   try {
     const saved = localStorage.getItem(FLOWLY_STORE_KEY)
-    if (!saved) return { users: [], workspaces: [], apps: [], session: { userId: null } }
+    if (!saved) return emptyStore()
     const parsed = JSON.parse(saved) as Partial<FlowlyStore>
+    const workspaces = Array.isArray(parsed.workspaces) ? parsed.workspaces : []
     return {
       users: Array.isArray(parsed.users) ? parsed.users : [],
-      workspaces: Array.isArray(parsed.workspaces) ? parsed.workspaces : [],
-      apps: Array.isArray(parsed.apps) ? parsed.apps : [],
+      workspaces,
+      apps: Array.isArray(parsed.apps) ? parsed.apps.map((app) => migrateApp(app as FlowlyApp, workspaces)) : [],
       session: { userId: parsed.session?.userId ?? null },
     }
   } catch {
-    return { users: [], workspaces: [], apps: [], session: { userId: null } }
+    return emptyStore()
   }
 }
 
 const writeFlowlyStore = (store: FlowlyStore) => localStorage.setItem(FLOWLY_STORE_KEY, JSON.stringify(store))
+
+const updateStore = (recipe: (store: FlowlyStore) => void): FlowlyStore => {
+  const store = readFlowlyStore()
+  recipe(store)
+  writeFlowlyStore(store)
+  return store
+}
 
 const hashPassword = async (password: string): Promise<string> => {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(password))
@@ -498,9 +533,9 @@ const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const makeId = () => (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `id-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 
 const setSessionUser = (userId: string | null) => {
-  const store = readFlowlyStore()
-  store.session.userId = userId
-  writeFlowlyStore(store)
+  updateStore((store) => {
+    store.session.userId = userId
+  })
 }
 
 const getCurrentUser = (): FlowlyUser | null => {
@@ -515,16 +550,27 @@ const getCurrentWorkspace = (): FlowlyWorkspace | null => {
   return store.workspaces.find((workspace) => workspace.ownerId === user.id) ?? null
 }
 
-const getCurrentWorkspaceApps = (): FlowlyApp[] => {
-  const workspace = getCurrentWorkspace()
-  if (!workspace) return []
-  const store = readFlowlyStore()
-  return store.apps.filter((app) => app.workspaceId === workspace.id)
+const getOwnedApps = (): FlowlyApp[] => {
+  const user = getCurrentUser()
+  if (!user) return []
+  return readFlowlyStore()
+    .apps
+    .filter((app) => app.ownerId === user.id)
+    .sort((a, b) => +new Date(b.updatedAt) - +new Date(a.updatedAt))
 }
 
+const getOwnedApp = (appId: string | null | undefined): FlowlyApp | null => {
+  const user = getCurrentUser()
+  if (!user || !appId) return null
+  const app = readFlowlyStore().apps.find((entry) => entry.id === appId)
+  if (!app || app.ownerId !== user.id) return null
+  return app
+}
+
+const getCurrentWorkspaceApps = (): FlowlyApp[] => getOwnedApps()
+
 const ensureCurrentWorkspace = (user: FlowlyUser): FlowlyWorkspace => {
-  const store = readFlowlyStore()
-  const existing = store.workspaces.find((workspace) => workspace.ownerId === user.id)
+  const existing = readFlowlyStore().workspaces.find((workspace) => workspace.ownerId === user.id)
   if (existing) return existing
   const workspace: FlowlyWorkspace = {
     id: makeId(),
@@ -533,71 +579,77 @@ const ensureCurrentWorkspace = (user: FlowlyUser): FlowlyWorkspace => {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   }
-  store.workspaces.push(workspace)
-  writeFlowlyStore(store)
-  return workspace
+  updateStore((store) => {
+    if (!store.workspaces.some((entry) => entry.ownerId === user.id)) store.workspaces.push(workspace)
+  })
+  return readFlowlyStore().workspaces.find((entry) => entry.ownerId === user.id) ?? workspace
 }
 
 const upsertWorkflowApp = (app: FlowlyApp) => {
-  const store = readFlowlyStore()
-  const existingIndex = store.apps.findIndex((entry) => entry.id === app.id)
-  if (existingIndex >= 0) {
-    store.apps[existingIndex] = app
-  } else {
-    store.apps.push(app)
-  }
-  writeFlowlyStore(store)
+  updateStore((store) => {
+    const existingIndex = store.apps.findIndex((entry) => entry.id === app.id)
+    if (existingIndex >= 0) store.apps[existingIndex] = app
+    else store.apps.push(app)
+  })
   return app
+}
+
+const resetWorkspaceHomeState = () => {
+  productState.currentAppId = null
+  productState.topic = ''
+  productState.customTopic = ''
+  productState.fields = []
+  productState.selectedField = 0
+  productState.approver = 'Chef'
+  productState.afterApproval = 'Markera som klar'
+  productState.saved = false
+  productState.published = false
+  productState.analysis = undefined
+  productState.reports = []
+  productState.builderTab = 'form'
+  productState.onboardingStep = 1
 }
 
 const loadAppIntoState = (app: FlowlyApp | null) => {
   if (!app) {
-    productState.currentAppId = null
-    productState.topic = ''
-    productState.fields = []
-    productState.approver = 'Chef'
-    productState.afterApproval = 'Markera som klar'
-    productState.saved = false
-    productState.published = false
-    productState.analysis = undefined
+    resetWorkspaceHomeState()
     return
   }
   productState.currentAppId = app.id
   productState.topic = app.config.topic || app.name
+  productState.customTopic = app.config.customTopic || ''
   productState.fields = app.config.fields.length ? app.config.fields : []
   productState.approver = app.config.approver || 'Chef'
   productState.afterApproval = app.config.afterApproval || 'Markera som klar'
   productState.saved = app.config.saved
   productState.published = app.config.published
   productState.analysis = app.config.analysis
+  productState.reports = app.config.reports || []
+  productState.builderTab = app.config.builderTab || 'form'
   productState.userName = getCurrentUser()?.name || productState.userName
   productState.workspaceName = getCurrentWorkspace()?.name || productState.workspaceName
 }
 
 const productState: ProductState = {
-  screen: 'onboarding', builderTab: 'form', onboardingStep: 1, topic: '', customTopic: '', fields: [], selectedField: 0,
+  screen: 'projects', builderTab: 'form', onboardingStep: 1, topic: '', customTopic: '', fields: [], selectedField: 0,
   approver: 'Chef', afterApproval: 'Markera som klar', saved: false, published: false, reports: [], currentAppId: null,
-  userName: 'Flowly användare', workspaceName: 'Flowly workspace',
+  userName: 'Flowly användare', workspaceName: 'Flowly workspace', authReady: false, appsStatus: 'idle',
 }
 
-const storedProductState = localStorage.getItem(FLOWLY_PRODUCT_STATE_KEY)
-if (storedProductState) {
-  try { Object.assign(productState, JSON.parse(storedProductState)) } catch { localStorage.removeItem(FLOWLY_PRODUCT_STATE_KEY) }
-}
-
-const persistProductState = () => localStorage.setItem(FLOWLY_PRODUCT_STATE_KEY, JSON.stringify(productState))
+const persistProductState = () => {}
 
 const currentUserProfile = () => getCurrentUser()
 const currentWorkspaceProfile = () => getCurrentWorkspace()
 const saveCurrentWorkflow = () => {
   const user = currentUserProfile()
-  const workspace = currentWorkspaceProfile()
+  const workspace = currentWorkspaceProfile() || (user ? ensureCurrentWorkspace(user) : null)
   if (!user || !workspace) return null
 
-  const existing = productState.currentAppId ? readFlowlyStore().apps.find((app) => app.id === productState.currentAppId) ?? null : null
+  const existing = getOwnedApp(productState.currentAppId)
   const appId = existing?.id ?? makeId()
   const nextApp: FlowlyApp = {
     id: appId,
+    ownerId: user.id,
     workspaceId: workspace.id,
     name: productState.topic || existing?.name || 'Nytt arbetsflöde',
     description: productState.customTopic || existing?.description || `Arbetsflöde byggt från ${productState.analysis?.fileName || 'Excel'}`,
@@ -607,12 +659,15 @@ const saveCurrentWorkflow = () => {
     sourceFileName: productState.analysis?.fileName || existing?.sourceFileName || 'excel-fil.xlsx',
     config: {
       topic: productState.topic,
+      customTopic: productState.customTopic,
       fields: productState.fields,
       approver: productState.approver,
       afterApproval: productState.afterApproval,
       published: productState.published,
       saved: true,
       analysis: productState.analysis,
+      reports: productState.reports,
+      builderTab: productState.builderTab,
     },
   }
   productState.currentAppId = nextApp.id
@@ -620,8 +675,45 @@ const saveCurrentWorkflow = () => {
   productState.published = nextApp.status === 'active'
   upsertWorkflowApp(nextApp)
   loadAppIntoState(nextApp)
-  persistProductState()
   return nextApp
+}
+
+type AppRoute =
+  | { name: 'marketing' }
+  | { name: 'apps' }
+  | { name: 'new' }
+  | { name: 'app'; id: string }
+
+const parseRoute = (): AppRoute => {
+  const raw = location.hash.replace(/^#/, '')
+  if (raw === '/apps' || raw === 'apps') return { name: 'apps' }
+  if (raw === '/apps/new' || raw === 'apps/new') return { name: 'new' }
+  const appMatch = raw.match(/^\/?apps\/([^/?#]+)/)
+  if (appMatch?.[1] && appMatch[1] !== 'new') return { name: 'app', id: decodeURIComponent(appMatch[1]) }
+  return { name: 'marketing' }
+}
+
+const setAppHash = (path: string) => {
+  const next = path.startsWith('#') ? path : `#${path}`
+  if (location.hash !== next) history.replaceState(null, '', next)
+}
+
+const formatRelativeDate = (iso: string) => {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return 'nyligen'
+  const start = (value: Date) => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime()
+  const diff = Math.round((start(new Date()) - start(date)) / 86400000)
+  if (diff === 0) return 'idag'
+  if (diff === 1) return 'igår'
+  return date.toLocaleDateString('sv-SE', { day: 'numeric', month: 'short' })
+}
+
+const topicIcon = (topic: string): IconName => {
+  if (topic.includes('Tid')) return 'clock'
+  if (topic.includes('Beställ')) return 'box'
+  if (topic.includes('Projekt')) return 'chart'
+  if (topic.includes('Kvalitet')) return 'shield'
+  return 'clipboard'
 }
 
 const authModal = () => `
@@ -653,17 +745,25 @@ const productSidebar = () => {
   const currentUser = currentUserProfile()
   const workspace = currentWorkspaceProfile()
   const initials = currentUser?.name?.split(' ')?.slice(0, 2).map((segment) => segment[0]?.toUpperCase() ?? '').join('') || 'FU'
+  const inApp = Boolean(productState.currentAppId) && productState.screen !== 'projects'
+  const appNav = [['dashboard', 'chart', 'Översikt'], ['builder', 'clipboard', 'Formulär'], ['workflows', 'workflow', 'Arbetsflöde'], ['approvals', 'check', 'Godkännanden'], ['team', 'users', 'Team']] as const
   return `
     <aside class="product-sidebar">
-      <a class="product-brand" href="#product-dashboard"><span class="brand-mark">f</span><strong>flowly</strong></a>
-      <div class="workspace-switcher">${av(initials.slice(0, 2).toUpperCase() || 'FU', 'sand')}<span><small>Workspace</small>${escapeHtml(workspace?.name || 'Flowly workspace')}</span>${icon('arrow', 13)}</div>
-      <nav class="product-nav"><p>Arbetsyta</p>${[['projects', 'workflow', 'Mina projekt'], ['dashboard', 'chart', 'Översikt'], ['workflows', 'workflow', 'Mina arbetsflöden'], ['approvals', 'check', 'Godkännanden'], ['team', 'users', 'Team']].map(([screen, ic, label]) => `<button type="button" data-product-screen="${screen}" class="${productState.screen === screen ? 'is-active' : ''}">${icon(ic as IconName, 16)}${label}${screen === 'approvals' && productState.reports.filter((report) => report.status === 'Väntar').length ? `<b>${productState.reports.filter((report) => report.status === 'Väntar').length}</b>` : ''}</button>`).join('')}<p class="nav-spacer">Workspace</p><button type="button" data-product-screen="settings" class="${productState.screen === 'settings' ? 'is-active' : ''}">${icon('settings', 16)}Inställningar</button></nav>
-      <div class="sidebar-bottom"><span>${av(initials.slice(0, 2).toUpperCase() || 'FU', 'peach')}<span><strong>${escapeHtml(currentUser?.name || 'Flowly användare')}</strong><small>Admin</small></span></span><button type="button" data-product-action="logout" aria-label="Logga ut">${icon('arrow', 15)}</button></div>
+      <a class="product-brand" href="#/apps" data-product-action="back-to-apps"><span class="brand-mark">f</span><strong>flowly</strong></a>
+      <div class="workspace-switcher">${av(initials.slice(0, 2).toUpperCase() || 'FU', 'sand')}<span><small>Workspace</small>${escapeHtml(workspace?.name || 'Flowly workspace')}</span></div>
+      <nav class="product-nav">
+        <p>Workspace</p>
+        <button type="button" data-product-action="back-to-apps" class="${productState.screen === 'projects' ? 'is-active' : ''}">${icon('layers', 16)}Mina appar</button>
+        ${inApp ? `<p class="nav-spacer">App</p>${appNav.map(([screen, ic, label]) => `<button type="button" data-product-screen="${screen}" class="${productState.screen === screen ? 'is-active' : ''}">${icon(ic, 16)}${label}${screen === 'approvals' && productState.reports.filter((report) => report.status === 'Väntar').length ? `<b>${productState.reports.filter((report) => report.status === 'Väntar').length}</b>` : ''}</button>`).join('')}` : ''}
+        <p class="nav-spacer">Konto</p>
+        <button type="button" data-product-screen="settings" class="${productState.screen === 'settings' ? 'is-active' : ''}">${icon('settings', 16)}Inställningar</button>
+      </nav>
+      <div class="sidebar-bottom"><span>${av(initials.slice(0, 2).toUpperCase() || 'FU', 'peach')}<span><strong>${escapeHtml(currentUser?.name || 'Flowly användare')}</strong><small>Inloggad</small></span></span><button type="button" data-product-action="logout" aria-label="Logga ut">${icon('arrow', 15)}</button></div>
     </aside>
   `
 }
 
-const productHeader = (title: string, description: string) => `<header class="product-header"><div><p class="product-kicker">Flowly workspace</p><h1>${title}</h1><p>${description}</p></div><div class="product-header-actions"><span class="workspace-status"><i></i> Lokalt workspace</span><button type="button" class="icon-button">${icon('bell', 16)}</button></div></header>`
+const productHeader = (title: string, description: string) => `<header class="product-header"><div>${productState.currentAppId && productState.screen !== 'projects' ? `<button type="button" class="text-link apps-back-link" data-product-action="back-to-apps">${icon('arrow', 14)} Mina appar</button>` : ''}<p class="product-kicker">Flowly workspace</p><h1>${title}</h1><p>${description}</p></div><div class="product-header-actions"><span class="workspace-status"><i></i> Sparat workspace</span><button type="button" class="icon-button">${icon('bell', 16)}</button></div></header>`
 
 const workflowFieldsFromAnalysis = (analysis: ExcelAnalysis): WorkflowField[] => analysis.columns.map((name) => ({
   name,
@@ -705,29 +805,38 @@ const builderWorkflowView = () => `<div class="product-layout"><div class="build
 const workflowCard = () => `<article class="workflow-product-card"><div class="workflow-card-top"><span class="card-icon">${icon('clock', 16)}</span><span class="status-pill ${productState.published ? 'active' : 'draft'}">${productState.published ? 'Aktiv' : 'Utkast'}</span></div><h3>${escapeHtml(productState.topic || 'Tidrapportering')}</h3><p>${productState.published ? productState.reports.length + ' rapporter' : 'Bygg vidare från er Excel-fil'}</p><small>Senast uppdaterad idag</small><div class="workflow-card-actions"><button type="button" class="button button-dark button-small" data-product-action="use-workflow">Använd</button><button type="button" class="text-link" data-product-action="edit-workflow">Redigera ${icon('arrow', 14)}</button></div></article>`
 
 const appCards = () => {
-  const apps = getCurrentWorkspaceApps()
-  if (!apps.length) {
-    return `<div class="empty-product-state"><span class="empty-state-icon">${icon('upload', 22)}</span><h3>Välkommen till Flowly</h3><p>Skapa din första app från en Excel-fil.</p><button type="button" class="button button-primary" data-product-action="new-workflow">Ladda upp Excel ${icon('arrow', 15)}</button></div>`
-  }
-
+  const apps = getOwnedApps()
   return apps.map((app) => `
     <article class="workflow-product-card">
-      <div class="workflow-card-top"><span class="card-icon">${icon('clock', 16)}</span><span class="status-pill ${app.status === 'active' ? 'active' : 'draft'}">${app.status === 'active' ? 'Aktiv' : 'Utkast'}</span></div>
+      <div class="workflow-card-top"><span class="card-icon">${icon(topicIcon(app.config.topic || app.name), 16)}</span><span class="status-pill ${app.status === 'active' ? 'active' : 'draft'}">${app.status === 'active' ? 'Aktiv' : 'Utkast'}</span></div>
       <h3>${escapeHtml(app.name)}</h3>
       <p>${escapeHtml(app.description || 'Byggt från Excel')}</p>
-      <small>Senast uppdaterad ${new Date(app.updatedAt).toLocaleDateString('sv-SE')}</small>
+      <small>Senast ändrad ${formatRelativeDate(app.updatedAt)}${app.sourceFileName ? ` · ${escapeHtml(app.sourceFileName)}` : ''}</small>
       <div class="workflow-card-actions">
-        <button type="button" class="button button-dark button-small" data-product-action="open-app" data-app-id="${app.id}">Öppna</button>
-        <button type="button" class="text-link" data-product-action="delete-app" data-app-id="${app.id}">Ta bort ${icon('arrow', 14)}</button>
+        <button type="button" class="button button-primary button-small" data-product-action="open-app" data-app-id="${app.id}">Öppna app ${icon('arrow', 14)}</button>
+        <button type="button" class="text-link" data-product-action="delete-app" data-app-id="${app.id}">Ta bort</button>
       </div>
     </article>
   `).join('')
 }
 
+const appsLoadingView = () => `<div class="workflow-product-grid apps-skeleton" aria-busy="true">${[0, 1, 2].map(() => '<article class="workflow-product-card skeleton-card"><i></i><i></i><i></i></article>').join('')}</div>`
+
+const appsErrorView = () => `<div class="empty-product-state"><span class="empty-state-icon">${icon('shield', 22)}</span><h3>Det gick inte att hämta dina appar.</h3><p>Kontrollera att du är inloggad och försök igen.</p><button type="button" class="button button-primary" data-product-action="retry-apps">Försök igen</button></div>`
+
+const appsEmptyView = () => `<div class="empty-product-state"><span class="empty-state-icon">${icon('upload', 22)}</span><h3>Du har inte skapat någon app ännu.</h3><p>Förvandla din första Excel-fil till en riktig app.</p><button type="button" class="button button-primary" data-product-action="new-workflow">${icon('plus', 14)} Skapa ny app</button></div>`
+
 const projectsView = () => {
-  const apps = getCurrentWorkspaceApps()
+  const apps = getOwnedApps()
   const user = currentUserProfile()
-  return `<div class="product-page"><header class="product-header"><div><p class="product-kicker">Flowly workspace</p><h1>${user?.name ? `Hej ${escapeHtml(user.name.split(' ')[0])}` : 'Mina projekt'}</h1><p>Välj ett projekt eller skapa ett nytt.</p></div><div class="product-header-actions"><button type="button" class="button button-primary button-small" data-product-action="new-workflow">${icon('plus', 14)} Skapa nytt projekt</button></div></header><div class="product-section-heading"><div><p class="product-kicker">Projekt</p><h2>Mina projekt</h2></div></div>${apps.length ? `<div class="workflow-product-grid">${appCards()}</div>` : `<div class="empty-product-state"><span class="empty-state-icon">${icon('upload', 22)}</span><h3>Välkommen till Flowly</h3><p>Du har inga projekt ännu. Skapa din första app från en Excel-fil.</p><button type="button" class="button button-primary" data-product-action="new-workflow">Skapa projekt ${icon('arrow', 15)}</button></div>`}</div>`
+  const body = productState.appsStatus === 'loading'
+    ? appsLoadingView()
+    : productState.appsStatus === 'error'
+      ? appsErrorView()
+      : apps.length
+        ? `<div class="workflow-product-grid">${appCards()}</div>`
+        : appsEmptyView()
+  return `<div class="product-page"><header class="product-header"><div><p class="product-kicker">Flowly workspace</p><h1>Mina appar</h1><p>${user?.name ? `${escapeHtml(user.name.split(' ')[0])}, hantera dina appar och fortsätt där du slutade.` : 'Hantera dina appar och fortsätt där du slutade.'}</p></div><div class="product-header-actions"><button type="button" class="button button-primary button-small" data-product-action="new-workflow">${icon('plus', 14)} Skapa ny app</button></div></header><div class="product-section-heading"><div><p class="product-kicker">Appar</p><h2>Alla dina appar</h2></div></div>${body}</div>`
 }
 
 const dashboardView = () => `<div class="product-page">${productHeader('Översikt', 'En lugn plats för era arbetsflöden och nästa steg.')}<div class="metric-grid"><div><span class="metric-icon">${icon('workflow', 16)}</span><strong>${getCurrentWorkspaceApps().filter((app) => app.status === 'active').length}</strong><small>Aktiva arbetsflöden</small></div><div><span class="metric-icon amber">${icon('clock', 16)}</span><strong>${productState.reports.filter((report) => report.status === 'Väntar').length}</strong><small>Väntar på godkännande</small></div><div><span class="metric-icon blue">${icon('chart', 16)}</span><strong>${productState.reports.length}</strong><small>Rapporter denna vecka</small></div><div><span class="metric-icon sage">${productState.reports.length ? '92%' : '—'}</span><strong>${productState.reports.length ? '92%' : '—'}</strong><small>Godkända i tid</small></div></div><div class="product-section-heading"><div><p class="product-kicker">Arbetsflöden</p><h2>Det ni arbetar med</h2></div><button type="button" class="button button-primary button-small" data-product-action="new-workflow">${icon('plus', 14)} Skapa arbetsflöde</button></div><div class="workflow-product-grid">${appCards()}</div><div class="product-section-heading"><div><p class="product-kicker">Senaste aktivitet</p><h2>Rapporter</h2></div><button type="button" class="text-link" data-product-screen="approvals">Visa alla ${icon('arrow', 14)}</button></div>${reportsTable()}</div>`
@@ -770,7 +879,7 @@ const productContent = () => {
   return dashboardView()
 }
 
-const productShell = () => productState.screen === 'onboarding' ? `<div class="onboarding-shell"><div class="onboarding-top"><a class="brand" href="#top"><span class="brand-mark">f</span>flowly</a><button type="button" class="text-link" data-product-action="logout">Logga ut</button></div>${onboardingSteps()}${onboardingView()}</div>` : `<div class="product-shell">${productSidebar()}<main class="product-main">${productContent()}</main></div>`
+const productShell = () => productState.screen === 'onboarding' ? `<div class="onboarding-shell"><div class="onboarding-top"><button type="button" class="brand" data-product-action="back-to-apps"><span class="brand-mark">f</span>flowly</button><div class="onboarding-top-actions"><button type="button" class="text-link" data-product-action="back-to-apps">${icon('arrow', 14)} Mina appar</button><button type="button" class="text-link" data-product-action="logout">Logga ut</button></div></div>${onboardingSteps()}${onboardingView()}</div>` : `<div class="product-shell">${productSidebar()}<main class="product-main">${productContent()}</main></div>`
 
 const steps = () => `
   <section class="story-section steps-section" id="upload">
@@ -1092,27 +1201,25 @@ app.innerHTML = `${header()}<main>${hero()}${chaos()}${transform()}${steps()}${d
 app.insertAdjacentHTML('beforeend', authModal())
 
 const authOverlay = () => document.querySelector<HTMLElement>('#auth-overlay')
+let bindMarketingPage = () => {}
+
+const renderLanding = () => {
+  document.body.classList.remove('is-product-mode')
+  app.innerHTML = `${header()}<main>${hero()}${chaos()}${transform()}${steps()}${dashboard()}${useCases()}${integration()}${pricing()}${roles()}${faq()}${cta()}</main>${footer()}`
+  app.insertAdjacentHTML('beforeend', authModal())
+  bindMarketingPage()
+}
+
 const renderProduct = () => {
   const currentUser = currentUserProfile()
   if (!currentUser) {
-    document.body.classList.remove('is-product-mode')
-    app.innerHTML = `${header()}<main>${hero()}${chaos()}${transform()}${steps()}${dashboard()}${useCases()}${integration()}${pricing()}${roles()}${faq()}${cta()}</main>${footer()}`
-    app.insertAdjacentHTML('beforeend', authModal())
+    renderLanding()
     return
   }
 
   const workspace = currentWorkspaceProfile() || ensureCurrentWorkspace(currentUser)
   productState.userName = currentUser.name
   productState.workspaceName = workspace.name
-  if (productState.currentAppId) {
-    const activeApp = getCurrentWorkspaceApps().find((app) => app.id === productState.currentAppId)
-    if (activeApp) loadAppIntoState(activeApp)
-  } else if (productState.screen === 'builder' || productState.screen === 'use' || productState.screen === 'approvals' || productState.screen === 'workflows' || productState.screen === 'team' || productState.screen === 'settings' || productState.screen === 'dashboard') {
-    productState.screen = 'projects'
-  }
-  if (productState.screen === 'onboarding') {
-    productState.screen = 'onboarding'
-  }
   document.body.classList.add('is-product-mode')
   app.innerHTML = productShell()
 }
@@ -1126,52 +1233,129 @@ const openAuth = (mode: 'signup' | 'login' = 'signup') => {
   const title = overlay.querySelector('#auth-title')
   const description = overlay.querySelector('.auth-description')
   const nameField = overlay.querySelector<HTMLElement>('.name-field')
+  const confirmField = overlay.querySelector<HTMLElement>('.confirm-field')
   const submit = overlay.querySelector<HTMLButtonElement>('[data-auth-submit]')
   const forgot = overlay.querySelector<HTMLElement>('.forgot-link')
   if (title) title.textContent = mode === 'signup' ? 'Skapa ditt Flowly-konto' : 'Logga in i Flowly'
   if (description) description.textContent = mode === 'signup' ? 'Skapa ett gratis konto och bygg ert första arbetsflöde.' : 'Fortsätt där ni slutade och öppna ert workspace.'
-  if (nameField) nameField.hidden = mode === 'login'
+  if (nameField) {
+    nameField.hidden = mode === 'login'
+    nameField.querySelector('input')?.toggleAttribute('required', mode === 'signup')
+  }
+  if (confirmField) {
+    confirmField.hidden = mode === 'login'
+    confirmField.querySelector('input')?.toggleAttribute('required', mode === 'signup')
+  }
   if (submit) submit.innerHTML = `${mode === 'signup' ? 'Skapa konto' : 'Logga in'} ${icon('arrow', 15)}`
   if (forgot) forgot.hidden = mode === 'signup'
 }
 
 const closeAuth = () => { const overlay = authOverlay(); if (overlay) overlay.hidden = true }
 
-const openUserApp = (appId: string) => {
-  const app = readFlowlyStore().apps.find((entry) => entry.id === appId)
-  if (!app) return
-  loadAppIntoState(app)
-  productState.screen = 'builder'
-  persistProductState()
-  renderProduct()
-}
-
-const deleteUserApp = (appId: string) => {
-  const store = readFlowlyStore()
-  const app = store.apps.find((entry) => entry.id === appId)
-  if (!app) return
-  if (!window.confirm(`Är du säker på att du vill ta bort ${app.name}?\n\nDetta går inte att ångra.`)) return
-  store.apps = store.apps.filter((entry) => entry.id !== appId)
-  writeFlowlyStore(store)
-  if (productState.currentAppId === appId) {
-    productState.currentAppId = null
-  }
-  persistProductState()
+const showAppsDashboard = () => {
+  resetWorkspaceHomeState()
+  productState.screen = 'projects'
+  productState.appsStatus = 'ready'
+  setAppHash('/apps')
   renderProduct()
 }
 
 const beginOnboarding = () => {
+  resetWorkspaceHomeState()
   productState.screen = 'onboarding'
   productState.onboardingStep = 1
-  productState.topic = ''
-  productState.analysis = undefined
-  productState.fields = []
-  productState.saved = false
-  productState.published = false
-  productState.currentAppId = null
-  persistProductState()
+  setAppHash('/apps/new')
   closeAuth()
   renderProduct()
+}
+
+const openUserApp = (appId: string, screen: ProductState['screen'] = 'dashboard') => {
+  const app = getOwnedApp(appId)
+  if (!app) {
+    console.error('Flowly: kunde inte öppna appen. Fel user eller saknad app.', { appId, userId: getCurrentUser()?.id })
+    showAppsDashboard()
+    return
+  }
+  loadAppIntoState(app)
+  productState.screen = screen === 'projects' || screen === 'onboarding' ? 'dashboard' : screen
+  setAppHash(`/apps/${app.id}`)
+  renderProduct()
+}
+
+const deleteUserApp = (appId: string) => {
+  const app = getOwnedApp(appId)
+  if (!app) {
+    console.error('Flowly: kunde inte ta bort appen. Fel user eller saknad app.', { appId, userId: getCurrentUser()?.id })
+    return
+  }
+  if (!window.confirm(`Är du säker på att du vill ta bort ${app.name}?\n\nDetta går inte att ångra.`)) return
+  updateStore((store) => {
+    store.apps = store.apps.filter((entry) => entry.id !== appId || entry.ownerId !== getCurrentUser()?.id)
+  })
+  if (productState.currentAppId === appId) resetWorkspaceHomeState()
+  showAppsDashboard()
+}
+
+const loadUserApps = () => {
+  const user = getCurrentUser()
+  if (!user) {
+    productState.appsStatus = 'error'
+    return []
+  }
+  try {
+    productState.appsStatus = 'loading'
+    ensureCurrentWorkspace(user)
+    const apps = getOwnedApps()
+    productState.appsStatus = 'ready'
+    return apps
+  } catch (error) {
+    console.error('Flowly: det gick inte att hämta appar.', error)
+    productState.appsStatus = 'error'
+    return []
+  }
+}
+
+const applyAuthenticatedRoute = () => {
+  const user = getCurrentUser()
+  if (!user) {
+    renderLanding()
+    return
+  }
+  productState.authReady = true
+  productState.userName = user.name
+  const workspace = ensureCurrentWorkspace(user)
+  productState.workspaceName = workspace.name
+  loadUserApps()
+
+  const route = parseRoute()
+  if (route.name === 'new') {
+    if (productState.screen !== 'onboarding') {
+      resetWorkspaceHomeState()
+      productState.screen = 'onboarding'
+      productState.onboardingStep = 1
+    }
+    renderProduct()
+    return
+  }
+  if (route.name === 'app') {
+    const app = getOwnedApp(route.id)
+    if (!app) {
+      console.error('Flowly: appen tillhör inte den inloggade användaren.', { appId: route.id, userId: user.id })
+      showAppsDashboard()
+      return
+    }
+    loadAppIntoState(app)
+    if (productState.screen === 'projects' || productState.screen === 'onboarding') productState.screen = 'dashboard'
+    renderProduct()
+    return
+  }
+  showAppsDashboard()
+}
+
+const enterAuthenticatedWorkspace = () => {
+  productState.authReady = true
+  loadUserApps()
+  showAppsDashboard()
 }
 
 const handleProductFile = async (file: File | undefined) => {
@@ -1216,9 +1400,10 @@ document.addEventListener('click', (event) => {
   if (authTab) openAuth((authTab.dataset.authMode as 'signup' | 'login') || 'signup')
 })
 
-document.querySelector<HTMLFormElement>('[data-auth-form]')?.addEventListener('submit', async (event) => {
+document.addEventListener('submit', async (event) => {
+  const form = event.target
+  if (!(form instanceof HTMLFormElement) || !form.matches('[data-auth-form]')) return
   event.preventDefault()
-  const form = event.currentTarget as HTMLFormElement
   const overlay = authOverlay()
   const data = new FormData(form)
   const mode = overlay?.dataset.mode || 'signup'
@@ -1251,17 +1436,13 @@ document.querySelector<HTMLFormElement>('[data-auth-form]')?.addEventListener('s
       passwordHash,
       createdAt: new Date().toISOString(),
     }
-    store.users.push(user)
-    const workspace = ensureCurrentWorkspace(user)
-    store.session.userId = user.id
-    writeFlowlyStore(store)
-    productState.userName = user.name
-    productState.workspaceName = workspace.name
-    productState.currentAppId = null
-    productState.screen = 'projects'
-    persistProductState()
+    updateStore((next) => {
+      next.users.push(user)
+      next.session.userId = user.id
+    })
+    ensureCurrentWorkspace(user)
     closeAuth()
-    renderProduct()
+    enterAuthenticatedWorkspace()
     return
   }
 
@@ -1271,23 +1452,17 @@ document.querySelector<HTMLFormElement>('[data-auth-form]')?.addEventListener('s
   if (!user) { if (error) error.textContent = 'Fel email eller lösenord.'; return }
   const passwordHash = await hashPassword(password)
   if (user.passwordHash !== passwordHash) { if (error) error.textContent = 'Fel email eller lösenord.'; return }
-  store.session.userId = user.id
-  writeFlowlyStore(store)
-  const workspace = ensureCurrentWorkspace(user)
-  productState.userName = user.name
-  productState.workspaceName = workspace.name
-  productState.currentAppId = null
-  productState.screen = 'projects'
-  persistProductState()
+  setSessionUser(user.id)
+  ensureCurrentWorkspace(user)
   closeAuth()
-  renderProduct()
+  enterAuthenticatedWorkspace()
 })
 
 app.addEventListener('change', (event) => {
   const target = event.target as HTMLInputElement | HTMLSelectElement
   if (target.id === 'product-file-upload' && target instanceof HTMLInputElement) void handleProductFile(target.files?.[0])
-  if (target.matches('[data-approval="approver"]')) { productState.approver = target.value; persistProductState() }
-  if (target.matches('input[name="after-approval"]')) { productState.afterApproval = target.value; persistProductState() }
+  if (target.matches('[data-approval="approver"]')) { productState.approver = target.value; if (productState.currentAppId) saveCurrentWorkflow() }
+  if (target.matches('input[name="after-approval"]')) { productState.afterApproval = target.value; if (productState.currentAppId) saveCurrentWorkflow() }
 })
 
 app.addEventListener('dragover', (event) => {
@@ -1311,24 +1486,34 @@ app.addEventListener('submit', (event) => {
   const values = Object.fromEntries(new FormData(form).entries()) as Record<string, string>
   productState.reports.push({ id: Date.now(), values, status: 'Väntar' })
   productState.screen = 'approvals'
-  persistProductState()
+  saveCurrentWorkflow()
   renderProduct()
 })
 
 app.addEventListener('click', (event) => {
   const target = event.target as HTMLElement
+  const actionButton = target.closest<HTMLElement>('[data-product-action]')
+  const action = actionButton?.dataset.productAction
+  if (actionButton instanceof HTMLAnchorElement) event.preventDefault()
   const screenButton = target.closest<HTMLElement>('[data-product-screen]')
-  if (screenButton) { productState.screen = screenButton.dataset.productScreen as ProductState['screen']; persistProductState(); renderProduct(); return }
+  if (screenButton) {
+    const nextScreen = screenButton.dataset.productScreen as ProductState['screen']
+    if (nextScreen === 'projects') { showAppsDashboard(); return }
+    if (nextScreen === 'settings' || productState.currentAppId) {
+      productState.screen = nextScreen
+      if (productState.currentAppId) setAppHash(`/apps/${productState.currentAppId}`)
+      renderProduct()
+    }
+    return
+  }
   const topic = target.closest<HTMLElement>('[data-topic]')
   if (topic) { productState.topic = topic.dataset.topic || ''; renderProduct(); return }
   if (target.closest('.onboarding-next')) {
-    if (productState.onboardingStep === 1) { productState.customTopic = document.querySelector<HTMLTextAreaElement>('.custom-topic')?.value.trim() || ''; productState.onboardingStep = 2; persistProductState(); renderProduct() }
+    if (productState.onboardingStep === 1) { productState.customTopic = document.querySelector<HTMLTextAreaElement>('.custom-topic')?.value.trim() || ''; productState.onboardingStep = 2; renderProduct() }
     else if (productState.onboardingStep === 4) {
+      const created = saveCurrentWorkflow()
       productState.screen = 'builder'
-      if (!productState.currentAppId) {
-        saveCurrentWorkflow()
-      }
-      persistProductState()
+      if (created) setAppHash(`/apps/${created.id}`)
       renderProduct()
     }
     return
@@ -1336,9 +1521,10 @@ app.addEventListener('click', (event) => {
   const field = target.closest<HTMLElement>('[data-field-index]')
   if (field) { productState.selectedField = Number(field.dataset.fieldIndex); renderProduct(); return }
   const builderTab = target.closest<HTMLElement>('[data-builder-tab]')
-  if (builderTab) { productState.builderTab = (builderTab.dataset.builderTab as ProductState['builderTab']) || 'form'; persistProductState(); renderProduct(); return }
-  const action = target.closest<HTMLElement>('[data-product-action]')?.dataset.productAction
+  if (builderTab) { productState.builderTab = (builderTab.dataset.builderTab as ProductState['builderTab']) || 'form'; saveCurrentWorkflow(); renderProduct(); return }
   if (action === 'back-onboarding') { productState.onboardingStep = 1; renderProduct(); return }
+  if (action === 'back-to-apps') { showAppsDashboard(); return }
+  if (action === 'retry-apps') { loadUserApps(); renderProduct(); return }
   if (action === 'new-workflow') { beginOnboarding(); return }
   if (action === 'open-app') {
     const appId = target.closest<HTMLElement>('[data-app-id]')?.dataset.appId
@@ -1356,12 +1542,12 @@ app.addEventListener('click', (event) => {
     const selected = productState.fields[productState.selectedField]
     const nameInput = document.querySelector<HTMLInputElement>('[data-editor="name"]')
     const typeInput = document.querySelector<HTMLSelectElement>('[data-editor="type"]')
-    if (selected && nameInput && typeInput) { selected.name = nameInput.value.trim() || selected.name; selected.type = typeInput.value; persistProductState(); renderProduct() }
+    if (selected && nameInput && typeInput) { selected.name = nameInput.value.trim() || selected.name; selected.type = typeInput.value; if (productState.currentAppId) saveCurrentWorkflow(); renderProduct() }
     return
   }
-  if (action === 'preview') { productState.screen = 'use'; persistProductState(); renderProduct(); return }
-  if (target.closest('[data-toggle-required]')) { const selected = productState.fields[productState.selectedField]; if (selected) { selected.required = !selected.required; persistProductState(); renderProduct() } return }
-  if (action === 'remove-field') { productState.fields.splice(productState.selectedField, 1); productState.selectedField = Math.max(0, productState.selectedField - 1); persistProductState(); renderProduct(); return }
+  if (action === 'preview') { productState.screen = 'use'; if (productState.currentAppId) saveCurrentWorkflow(); renderProduct(); return }
+  if (target.closest('[data-toggle-required]')) { const selected = productState.fields[productState.selectedField]; if (selected) { selected.required = !selected.required; if (productState.currentAppId) saveCurrentWorkflow(); renderProduct() } return }
+  if (action === 'remove-field') { productState.fields.splice(productState.selectedField, 1); productState.selectedField = Math.max(0, productState.selectedField - 1); if (productState.currentAppId) saveCurrentWorkflow(); renderProduct(); return }
   if (action === 'save-workflow') {
     saveCurrentWorkflow()
     renderProduct()
@@ -1379,19 +1565,22 @@ app.addEventListener('click', (event) => {
   if (action === 'export') { exportReports(); return }
   if (action === 'logout') {
     setSessionUser(null)
-    productState.currentAppId = null
+    productState.authReady = false
+    productState.appsStatus = 'idle'
+    resetWorkspaceHomeState()
     productState.screen = 'projects'
-    persistProductState()
-    renderProduct()
+    history.replaceState(null, '', location.pathname + location.search)
+    renderLanding()
     return
   }
   const reportAction = target.closest<HTMLElement>('[data-report-action]')
-  if (reportAction) { const report = productState.reports.find((item) => item.id === Number(reportAction.dataset.reportId)); if (report) report.status = reportAction.dataset.reportAction === 'approve' ? 'Godkänd' : 'Avvisad'; persistProductState(); renderProduct() }
+  if (reportAction) { const report = productState.reports.find((item) => item.id === Number(reportAction.dataset.reportId)); if (report) report.status = reportAction.dataset.reportAction === 'approve' ? 'Godkänd' : 'Avvisad'; saveCurrentWorkflow(); renderProduct() }
 })
 
 const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
 if (reduceMotion) document.documentElement.classList.add('reduce-motion')
 
+bindMarketingPage = () => {
 const observer = new IntersectionObserver(
   (entries) => {
     entries.forEach((entry) => {
@@ -1463,22 +1652,6 @@ if (!reduceMotion && demo) {
     setStage(stages[index])
   }, 3800)
 }
-
-const initializeFlowly = () => {
-  const currentUser = currentUserProfile()
-  if (!currentUser) {
-    renderProduct()
-    return
-  }
-  const workspace = currentWorkspaceProfile() || ensureCurrentWorkspace(currentUser)
-  productState.userName = currentUser.name
-  productState.workspaceName = workspace.name
-  productState.screen = 'projects'
-  productState.currentAppId = null
-  renderProduct()
-}
-
-initializeFlowly()
 
 const uploadZone = document.querySelector<HTMLLabelElement>('.upload-zone')
 const uploadInput = document.querySelector<HTMLInputElement>('#file-upload')
@@ -1656,3 +1829,23 @@ navTargets.forEach(([id]) => {
   const section = document.getElementById(id)
   if (section) navObserver.observe(section)
 })
+}
+
+const initializeFlowly = () => {
+  productState.authReady = true
+  const currentUser = currentUserProfile()
+  if (!currentUser) {
+    if (parseRoute().name !== 'marketing') history.replaceState(null, '', location.pathname + location.search)
+    if (!document.querySelector('.hero') || document.querySelector('.product-shell, .onboarding-shell')) renderLanding()
+    else bindMarketingPage()
+    return
+  }
+  applyAuthenticatedRoute()
+}
+
+window.addEventListener('hashchange', () => {
+  if (!getCurrentUser()) return
+  applyAuthenticatedRoute()
+})
+
+initializeFlowly()
