@@ -71,7 +71,7 @@ const header = () => `
       <nav class="desktop-nav" aria-label="Huvudmeny">${navMap.map(([label, id]) => `<a href="#${id}">${label}</a>`).join('')}</nav>
       <div class="header-actions">
         <a class="login-link" href="#faq">Logga in</a>
-        <a class="button button-dark button-small" href="#cta">Testa gratis ${icon('arrow', 14)}</a>
+        <a class="button button-primary button-small" href="#cta">Testa gratis ${icon('arrow', 14)}</a>
       </div>
       <button class="icon-button mobile-menu-trigger" type="button" aria-label="Öppna meny">${icon('menu')}</button>
     </div>
