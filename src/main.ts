@@ -2108,7 +2108,7 @@ const initializeFlowly = () => {
   applyAuthenticatedRoute()
 }
 
-const syncHomeFocus = (route: AppRoute) => {
+const syncHomeFocus = (route: Extract<AppRoute, { name: 'home' }>) => {
   document.title = pageTitle(route)
   document.querySelectorAll('.desktop-nav a, .mobile-menu a').forEach((link) => {
     const href = link.getAttribute('href')
