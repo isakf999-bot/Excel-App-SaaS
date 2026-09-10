@@ -409,8 +409,47 @@ const renderAnalysis = (analysis: ExcelAnalysis) => {
 
 type WorkflowField = { name: string; type: string; required: boolean; value: string }
 type Report = { id: number; values: Record<string, string>; status: 'Väntar' | 'Godkänd' | 'Avvisad' }
+type FlowlyUser = {
+  id: string
+  name: string
+  email: string
+  passwordHash: string
+  createdAt: string
+}
+type FlowlyWorkspace = {
+  id: string
+  ownerId: string
+  name: string
+  createdAt: string
+  updatedAt: string
+}
+type FlowlyApp = {
+  id: string
+  workspaceId: string
+  name: string
+  description: string
+  createdAt: string
+  updatedAt: string
+  status: 'draft' | 'active'
+  sourceFileName: string
+  config: {
+    topic: string
+    fields: WorkflowField[]
+    approver: string
+    afterApproval: string
+    published: boolean
+    saved: boolean
+    analysis?: ExcelAnalysis
+  }
+}
+type FlowlyStore = {
+  users: FlowlyUser[]
+  workspaces: FlowlyWorkspace[]
+  apps: FlowlyApp[]
+  session: { userId: string | null }
+}
 type ProductState = {
-  screen: 'onboarding' | 'dashboard' | 'workflows' | 'builder' | 'use' | 'approvals' | 'team' | 'settings'
+  screen: 'onboarding' | 'projects' | 'dashboard' | 'workflows' | 'builder' | 'use' | 'approvals' | 'team' | 'settings'
   builderTab: 'form' | 'workflow' | 'approvals' | 'team'
   onboardingStep: 1 | 2 | 3 | 4
   topic: string
@@ -423,19 +462,167 @@ type ProductState = {
   saved: boolean
   published: boolean
   reports: Report[]
+  currentAppId: string | null
+  userName: string
+  workspaceName: string
+}
+
+const FLOWLY_STORE_KEY = 'flowly-store-v1'
+const FLOWLY_PRODUCT_STATE_KEY = 'flowly-product-state'
+
+const readFlowlyStore = (): FlowlyStore => {
+  try {
+    const saved = localStorage.getItem(FLOWLY_STORE_KEY)
+    if (!saved) return { users: [], workspaces: [], apps: [], session: { userId: null } }
+    const parsed = JSON.parse(saved) as Partial<FlowlyStore>
+    return {
+      users: Array.isArray(parsed.users) ? parsed.users : [],
+      workspaces: Array.isArray(parsed.workspaces) ? parsed.workspaces : [],
+      apps: Array.isArray(parsed.apps) ? parsed.apps : [],
+      session: { userId: parsed.session?.userId ?? null },
+    }
+  } catch {
+    return { users: [], workspaces: [], apps: [], session: { userId: null } }
+  }
+}
+
+const writeFlowlyStore = (store: FlowlyStore) => localStorage.setItem(FLOWLY_STORE_KEY, JSON.stringify(store))
+
+const hashPassword = async (password: string): Promise<string> => {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(password))
+  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+const makeId = () => (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `id-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+
+const setSessionUser = (userId: string | null) => {
+  const store = readFlowlyStore()
+  store.session.userId = userId
+  writeFlowlyStore(store)
+}
+
+const getCurrentUser = (): FlowlyUser | null => {
+  const store = readFlowlyStore()
+  return store.users.find((user) => user.id === store.session.userId) ?? null
+}
+
+const getCurrentWorkspace = (): FlowlyWorkspace | null => {
+  const user = getCurrentUser()
+  if (!user) return null
+  const store = readFlowlyStore()
+  return store.workspaces.find((workspace) => workspace.ownerId === user.id) ?? null
+}
+
+const getCurrentWorkspaceApps = (): FlowlyApp[] => {
+  const workspace = getCurrentWorkspace()
+  if (!workspace) return []
+  const store = readFlowlyStore()
+  return store.apps.filter((app) => app.workspaceId === workspace.id)
+}
+
+const ensureCurrentWorkspace = (user: FlowlyUser): FlowlyWorkspace => {
+  const store = readFlowlyStore()
+  const existing = store.workspaces.find((workspace) => workspace.ownerId === user.id)
+  if (existing) return existing
+  const workspace: FlowlyWorkspace = {
+    id: makeId(),
+    ownerId: user.id,
+    name: `${user.name.split(' ')[0] || 'Flowly'} workspace`,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  }
+  store.workspaces.push(workspace)
+  writeFlowlyStore(store)
+  return workspace
+}
+
+const upsertWorkflowApp = (app: FlowlyApp) => {
+  const store = readFlowlyStore()
+  const existingIndex = store.apps.findIndex((entry) => entry.id === app.id)
+  if (existingIndex >= 0) {
+    store.apps[existingIndex] = app
+  } else {
+    store.apps.push(app)
+  }
+  writeFlowlyStore(store)
+  return app
+}
+
+const loadAppIntoState = (app: FlowlyApp | null) => {
+  if (!app) {
+    productState.currentAppId = null
+    productState.topic = ''
+    productState.fields = []
+    productState.approver = 'Chef'
+    productState.afterApproval = 'Markera som klar'
+    productState.saved = false
+    productState.published = false
+    productState.analysis = undefined
+    return
+  }
+  productState.currentAppId = app.id
+  productState.topic = app.config.topic || app.name
+  productState.fields = app.config.fields.length ? app.config.fields : []
+  productState.approver = app.config.approver || 'Chef'
+  productState.afterApproval = app.config.afterApproval || 'Markera som klar'
+  productState.saved = app.config.saved
+  productState.published = app.config.published
+  productState.analysis = app.config.analysis
+  productState.userName = getCurrentUser()?.name || productState.userName
+  productState.workspaceName = getCurrentWorkspace()?.name || productState.workspaceName
 }
 
 const productState: ProductState = {
   screen: 'onboarding', builderTab: 'form', onboardingStep: 1, topic: '', customTopic: '', fields: [], selectedField: 0,
-  approver: 'Chef', afterApproval: 'Markera som klar', saved: false, published: false, reports: [],
+  approver: 'Chef', afterApproval: 'Markera som klar', saved: false, published: false, reports: [], currentAppId: null,
+  userName: 'Flowly användare', workspaceName: 'Flowly workspace',
 }
 
-const storedProductState = localStorage.getItem('flowly-product-state')
+const storedProductState = localStorage.getItem(FLOWLY_PRODUCT_STATE_KEY)
 if (storedProductState) {
-  try { Object.assign(productState, JSON.parse(storedProductState)) } catch { localStorage.removeItem('flowly-product-state') }
+  try { Object.assign(productState, JSON.parse(storedProductState)) } catch { localStorage.removeItem(FLOWLY_PRODUCT_STATE_KEY) }
 }
 
-const persistProductState = () => localStorage.setItem('flowly-product-state', JSON.stringify(productState))
+const persistProductState = () => localStorage.setItem(FLOWLY_PRODUCT_STATE_KEY, JSON.stringify(productState))
+
+const currentUserProfile = () => getCurrentUser()
+const currentWorkspaceProfile = () => getCurrentWorkspace()
+const saveCurrentWorkflow = () => {
+  const user = currentUserProfile()
+  const workspace = currentWorkspaceProfile()
+  if (!user || !workspace) return null
+
+  const existing = productState.currentAppId ? readFlowlyStore().apps.find((app) => app.id === productState.currentAppId) ?? null : null
+  const appId = existing?.id ?? makeId()
+  const nextApp: FlowlyApp = {
+    id: appId,
+    workspaceId: workspace.id,
+    name: productState.topic || existing?.name || 'Nytt arbetsflöde',
+    description: productState.customTopic || existing?.description || `Arbetsflöde byggt från ${productState.analysis?.fileName || 'Excel'}`,
+    createdAt: existing?.createdAt ?? new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    status: productState.published ? 'active' : 'draft',
+    sourceFileName: productState.analysis?.fileName || existing?.sourceFileName || 'excel-fil.xlsx',
+    config: {
+      topic: productState.topic,
+      fields: productState.fields,
+      approver: productState.approver,
+      afterApproval: productState.afterApproval,
+      published: productState.published,
+      saved: true,
+      analysis: productState.analysis,
+    },
+  }
+  productState.currentAppId = nextApp.id
+  productState.saved = true
+  productState.published = nextApp.status === 'active'
+  upsertWorkflowApp(nextApp)
+  loadAppIntoState(nextApp)
+  persistProductState()
+  return nextApp
+}
 
 const authModal = () => `
   <div class="auth-overlay" id="auth-overlay" hidden>
@@ -448,6 +635,7 @@ const authModal = () => `
         <label class="name-field">Namn<input name="name" type="text" placeholder="Anna Andersson" autocomplete="name" required /></label>
         <label>E-post<input name="email" type="email" placeholder="ni@foretag.se" autocomplete="email" required /></label>
         <label>Lösenord<input name="password" type="password" placeholder="Minst 8 tecken" minlength="8" autocomplete="new-password" required /></label>
+        <label class="confirm-field">Bekräfta lösenord<input name="confirmPassword" type="password" placeholder="Skriv lösenordet igen" minlength="8" autocomplete="new-password" required /></label>
         <a class="forgot-link" href="#">Glömt lösenord?</a>
         <p class="auth-error" aria-live="polite"></p>
         <button class="button button-primary button-full" type="submit" data-auth-submit>Skapa konto ${icon('arrow', 15)}</button>
@@ -461,14 +649,19 @@ const authModal = () => `
 
 const onboardingSteps = () => `<div class="product-stepper">${[['01', 'Konto'], ['02', 'Arbetsflöde'], ['03', 'Excel'], ['04', 'Konfigurera']].map(([number, label], index) => `<span class="${index + 1 <= productState.onboardingStep ? 'is-active' : ''}"><b>${number}</b>${label}</span>`).join('')}</div>`
 
-const productSidebar = () => `
-  <aside class="product-sidebar">
-    <a class="product-brand" href="#product-dashboard"><span class="brand-mark">f</span><strong>flowly</strong></a>
-    <div class="workspace-switcher">${av('N', 'sand')}<span><small>Workspace</small>Nordmark AB</span>${icon('arrow', 13)}</div>
-    <nav class="product-nav"><p>Arbetsyta</p>${[['dashboard', 'chart', 'Översikt'], ['workflows', 'workflow', 'Mina arbetsflöden'], ['approvals', 'check', 'Godkännanden'], ['team', 'users', 'Team']].map(([screen, ic, label]) => `<button type="button" data-product-screen="${screen}" class="${productState.screen === screen ? 'is-active' : ''}">${icon(ic as IconName, 16)}${label}${screen === 'approvals' && productState.reports.filter((report) => report.status === 'Väntar').length ? `<b>${productState.reports.filter((report) => report.status === 'Väntar').length}</b>` : ''}</button>`).join('')}<p class="nav-spacer">Workspace</p><button type="button" data-product-screen="settings" class="${productState.screen === 'settings' ? 'is-active' : ''}">${icon('settings', 16)}Inställningar</button></nav>
-    <div class="sidebar-bottom"><span>${av('AA', 'peach')}<span><strong>${escapeHtml(localStorage.getItem('flowly-user-name') || 'Anna Andersson')}</strong><small>Admin</small></span></span><button type="button" data-product-action="logout" aria-label="Logga ut">${icon('arrow', 15)}</button></div>
-  </aside>
-`
+const productSidebar = () => {
+  const currentUser = currentUserProfile()
+  const workspace = currentWorkspaceProfile()
+  const initials = currentUser?.name?.split(' ')?.slice(0, 2).map((segment) => segment[0]?.toUpperCase() ?? '').join('') || 'FU'
+  return `
+    <aside class="product-sidebar">
+      <a class="product-brand" href="#product-dashboard"><span class="brand-mark">f</span><strong>flowly</strong></a>
+      <div class="workspace-switcher">${av(initials.slice(0, 2).toUpperCase() || 'FU', 'sand')}<span><small>Workspace</small>${escapeHtml(workspace?.name || 'Flowly workspace')}</span>${icon('arrow', 13)}</div>
+      <nav class="product-nav"><p>Arbetsyta</p>${[['projects', 'workflow', 'Mina projekt'], ['dashboard', 'chart', 'Översikt'], ['workflows', 'workflow', 'Mina arbetsflöden'], ['approvals', 'check', 'Godkännanden'], ['team', 'users', 'Team']].map(([screen, ic, label]) => `<button type="button" data-product-screen="${screen}" class="${productState.screen === screen ? 'is-active' : ''}">${icon(ic as IconName, 16)}${label}${screen === 'approvals' && productState.reports.filter((report) => report.status === 'Väntar').length ? `<b>${productState.reports.filter((report) => report.status === 'Väntar').length}</b>` : ''}</button>`).join('')}<p class="nav-spacer">Workspace</p><button type="button" data-product-screen="settings" class="${productState.screen === 'settings' ? 'is-active' : ''}">${icon('settings', 16)}Inställningar</button></nav>
+      <div class="sidebar-bottom"><span>${av(initials.slice(0, 2).toUpperCase() || 'FU', 'peach')}<span><strong>${escapeHtml(currentUser?.name || 'Flowly användare')}</strong><small>Admin</small></span></span><button type="button" data-product-action="logout" aria-label="Logga ut">${icon('arrow', 15)}</button></div>
+    </aside>
+  `
+}
 
 const productHeader = (title: string, description: string) => `<header class="product-header"><div><p class="product-kicker">Flowly workspace</p><h1>${title}</h1><p>${description}</p></div><div class="product-header-actions"><span class="workspace-status"><i></i> Lokalt workspace</span><button type="button" class="icon-button">${icon('bell', 16)}</button></div></header>`
 
@@ -511,11 +704,37 @@ const builderWorkflowView = () => `<div class="product-layout"><div class="build
 
 const workflowCard = () => `<article class="workflow-product-card"><div class="workflow-card-top"><span class="card-icon">${icon('clock', 16)}</span><span class="status-pill ${productState.published ? 'active' : 'draft'}">${productState.published ? 'Aktiv' : 'Utkast'}</span></div><h3>${escapeHtml(productState.topic || 'Tidrapportering')}</h3><p>${productState.published ? productState.reports.length + ' rapporter' : 'Bygg vidare från er Excel-fil'}</p><small>Senast uppdaterad idag</small><div class="workflow-card-actions"><button type="button" class="button button-dark button-small" data-product-action="use-workflow">Använd</button><button type="button" class="text-link" data-product-action="edit-workflow">Redigera ${icon('arrow', 14)}</button></div></article>`
 
-const dashboardView = () => `<div class="product-page">${productHeader('Översikt', 'En lugn plats för era arbetsflöden och nästa steg.')}<div class="metric-grid"><div><span class="metric-icon">${icon('workflow', 16)}</span><strong>${productState.published ? '1' : '0'}</strong><small>Aktiva arbetsflöden</small></div><div><span class="metric-icon amber">${icon('clock', 16)}</span><strong>${productState.reports.filter((report) => report.status === 'Väntar').length}</strong><small>Väntar på godkännande</small></div><div><span class="metric-icon blue">${icon('chart', 16)}</span><strong>${productState.reports.length}</strong><small>Rapporter denna vecka</small></div><div><span class="metric-icon sage">${productState.reports.length ? '92%' : '—'}</span><strong>${productState.reports.length ? '92%' : '—'}</strong><small>Godkända i tid</small></div></div><div class="product-section-heading"><div><p class="product-kicker">Arbetsflöden</p><h2>Det ni arbetar med</h2></div><button type="button" class="button button-primary button-small" data-product-action="new-workflow">${icon('plus', 14)} Skapa arbetsflöde</button></div><div class="workflow-product-grid">${productState.analysis ? workflowCard() : `<div class="empty-product-state"><span class="empty-state-icon">${icon('upload', 22)}</span><h3>Inga arbetsflöden ännu</h3><p>Börja med en Excel-fil och skapa ert första arbetsflöde.</p><button type="button" class="button button-primary" data-product-action="new-workflow">Skapa arbetsflöde ${icon('arrow', 15)}</button></div>`}</div><div class="product-section-heading"><div><p class="product-kicker">Senaste aktivitet</p><h2>Rapporter</h2></div><button type="button" class="text-link" data-product-screen="approvals">Visa alla ${icon('arrow', 14)}</button></div>${reportsTable()}</div>`
+const appCards = () => {
+  const apps = getCurrentWorkspaceApps()
+  if (!apps.length) {
+    return `<div class="empty-product-state"><span class="empty-state-icon">${icon('upload', 22)}</span><h3>Välkommen till Flowly</h3><p>Skapa din första app från en Excel-fil.</p><button type="button" class="button button-primary" data-product-action="new-workflow">Ladda upp Excel ${icon('arrow', 15)}</button></div>`
+  }
+
+  return apps.map((app) => `
+    <article class="workflow-product-card">
+      <div class="workflow-card-top"><span class="card-icon">${icon('clock', 16)}</span><span class="status-pill ${app.status === 'active' ? 'active' : 'draft'}">${app.status === 'active' ? 'Aktiv' : 'Utkast'}</span></div>
+      <h3>${escapeHtml(app.name)}</h3>
+      <p>${escapeHtml(app.description || 'Byggt från Excel')}</p>
+      <small>Senast uppdaterad ${new Date(app.updatedAt).toLocaleDateString('sv-SE')}</small>
+      <div class="workflow-card-actions">
+        <button type="button" class="button button-dark button-small" data-product-action="open-app" data-app-id="${app.id}">Öppna</button>
+        <button type="button" class="text-link" data-product-action="delete-app" data-app-id="${app.id}">Ta bort ${icon('arrow', 14)}</button>
+      </div>
+    </article>
+  `).join('')
+}
+
+const projectsView = () => {
+  const apps = getCurrentWorkspaceApps()
+  const user = currentUserProfile()
+  return `<div class="product-page"><header class="product-header"><div><p class="product-kicker">Flowly workspace</p><h1>${user?.name ? `Hej ${escapeHtml(user.name.split(' ')[0])}` : 'Mina projekt'}</h1><p>Välj ett projekt eller skapa ett nytt.</p></div><div class="product-header-actions"><button type="button" class="button button-primary button-small" data-product-action="new-workflow">${icon('plus', 14)} Skapa nytt projekt</button></div></header><div class="product-section-heading"><div><p class="product-kicker">Projekt</p><h2>Mina projekt</h2></div></div>${apps.length ? `<div class="workflow-product-grid">${appCards()}</div>` : `<div class="empty-product-state"><span class="empty-state-icon">${icon('upload', 22)}</span><h3>Välkommen till Flowly</h3><p>Du har inga projekt ännu. Skapa din första app från en Excel-fil.</p><button type="button" class="button button-primary" data-product-action="new-workflow">Skapa projekt ${icon('arrow', 15)}</button></div>`}</div>`
+}
+
+const dashboardView = () => `<div class="product-page">${productHeader('Översikt', 'En lugn plats för era arbetsflöden och nästa steg.')}<div class="metric-grid"><div><span class="metric-icon">${icon('workflow', 16)}</span><strong>${getCurrentWorkspaceApps().filter((app) => app.status === 'active').length}</strong><small>Aktiva arbetsflöden</small></div><div><span class="metric-icon amber">${icon('clock', 16)}</span><strong>${productState.reports.filter((report) => report.status === 'Väntar').length}</strong><small>Väntar på godkännande</small></div><div><span class="metric-icon blue">${icon('chart', 16)}</span><strong>${productState.reports.length}</strong><small>Rapporter denna vecka</small></div><div><span class="metric-icon sage">${productState.reports.length ? '92%' : '—'}</span><strong>${productState.reports.length ? '92%' : '—'}</strong><small>Godkända i tid</small></div></div><div class="product-section-heading"><div><p class="product-kicker">Arbetsflöden</p><h2>Det ni arbetar med</h2></div><button type="button" class="button button-primary button-small" data-product-action="new-workflow">${icon('plus', 14)} Skapa arbetsflöde</button></div><div class="workflow-product-grid">${appCards()}</div><div class="product-section-heading"><div><p class="product-kicker">Senaste aktivitet</p><h2>Rapporter</h2></div><button type="button" class="text-link" data-product-screen="approvals">Visa alla ${icon('arrow', 14)}</button></div>${reportsTable()}</div>`
 
 const reportsTable = () => productState.reports.length ? `<div class="reports-table"><div class="reports-table-head"><span>Rapport</span><span>Status</span><span>Åtgärd</span></div>${productState.reports.map((report) => `<div class="reports-table-row"><div><strong>${escapeHtml(report.values.Namn || report.values.Name || 'Rapport')}</strong><small>${escapeHtml(productState.topic || 'Arbetsflöde')} · ${escapeHtml(report.values.Datum || 'Idag')}</small></div><span class="status-pill ${report.status === 'Godkänd' ? 'active' : report.status === 'Avvisad' ? 'rejected' : 'waiting'}">${report.status}</span><button type="button" class="text-link" data-product-screen="approvals">Öppna ${icon('arrow', 13)}</button></div>`).join('')}</div>` : '<div class="quiet-empty">Inga inskickade rapporter ännu.</div>'
 
-const workflowsView = () => `<div class="product-page">${productHeader('Mina arbetsflöden', 'Bygg, publicera och använd era processer på ett ställe.')}<div class="workflow-product-grid">${productState.analysis ? workflowCard() : `<div class="empty-product-state"><span class="empty-state-icon">${icon('workflow', 22)}</span><h3>Inga arbetsflöden ännu</h3><p>Skapa ert första flöde från en Excel-fil.</p><button type="button" class="button button-primary" data-product-action="new-workflow">Skapa arbetsflöde</button></div>`}</div></div>`
+const workflowsView = () => `<div class="product-page">${productHeader('Mina arbetsflöden', 'Bygg, publicera och använd era processer på ett ställe.')}<div class="workflow-product-grid">${appCards()}</div></div>`
 
 const useWorkflowView = () => {
   const fields = productState.fields.filter((field) => field.type !== 'Status')
@@ -541,6 +760,7 @@ const teamView = () => `<div class="product-page">${productHeader('Team', 'Best�
 const settingsView = () => `<div class="product-page">${productHeader('Inställningar', 'Grundläggande inställningar för ert workspace.')}<section class="settings-card"><p class="product-kicker">Workspace</p><h2>Nordmark AB</h2><label>Workspace-namn<input value="Nordmark AB" /></label><label>Standardgodkännare<select><option>Chef</option><option>Team Lead</option></select></label><button type="button" class="button button-dark">Spara inställningar</button></section></div>`
 
 const productContent = () => {
+  if (productState.screen === 'projects') return projectsView()
   if (productState.screen === 'builder') return builderView()
   if (productState.screen === 'use') return useWorkflowView()
   if (productState.screen === 'approvals') return approvalsView()
@@ -873,6 +1093,26 @@ app.insertAdjacentHTML('beforeend', authModal())
 
 const authOverlay = () => document.querySelector<HTMLElement>('#auth-overlay')
 const renderProduct = () => {
+  const currentUser = currentUserProfile()
+  if (!currentUser) {
+    document.body.classList.remove('is-product-mode')
+    app.innerHTML = `${header()}<main>${hero()}${chaos()}${transform()}${steps()}${dashboard()}${useCases()}${integration()}${pricing()}${roles()}${faq()}${cta()}</main>${footer()}`
+    app.insertAdjacentHTML('beforeend', authModal())
+    return
+  }
+
+  const workspace = currentWorkspaceProfile() || ensureCurrentWorkspace(currentUser)
+  productState.userName = currentUser.name
+  productState.workspaceName = workspace.name
+  if (productState.currentAppId) {
+    const activeApp = getCurrentWorkspaceApps().find((app) => app.id === productState.currentAppId)
+    if (activeApp) loadAppIntoState(activeApp)
+  } else if (productState.screen === 'builder' || productState.screen === 'use' || productState.screen === 'approvals' || productState.screen === 'workflows' || productState.screen === 'team' || productState.screen === 'settings' || productState.screen === 'dashboard') {
+    productState.screen = 'projects'
+  }
+  if (productState.screen === 'onboarding') {
+    productState.screen = 'onboarding'
+  }
   document.body.classList.add('is-product-mode')
   app.innerHTML = productShell()
 }
@@ -897,6 +1137,29 @@ const openAuth = (mode: 'signup' | 'login' = 'signup') => {
 
 const closeAuth = () => { const overlay = authOverlay(); if (overlay) overlay.hidden = true }
 
+const openUserApp = (appId: string) => {
+  const app = readFlowlyStore().apps.find((entry) => entry.id === appId)
+  if (!app) return
+  loadAppIntoState(app)
+  productState.screen = 'builder'
+  persistProductState()
+  renderProduct()
+}
+
+const deleteUserApp = (appId: string) => {
+  const store = readFlowlyStore()
+  const app = store.apps.find((entry) => entry.id === appId)
+  if (!app) return
+  if (!window.confirm(`Är du säker på att du vill ta bort ${app.name}?\n\nDetta går inte att ångra.`)) return
+  store.apps = store.apps.filter((entry) => entry.id !== appId)
+  writeFlowlyStore(store)
+  if (productState.currentAppId === appId) {
+    productState.currentAppId = null
+  }
+  persistProductState()
+  renderProduct()
+}
+
 const beginOnboarding = () => {
   productState.screen = 'onboarding'
   productState.onboardingStep = 1
@@ -905,6 +1168,7 @@ const beginOnboarding = () => {
   productState.fields = []
   productState.saved = false
   productState.published = false
+  productState.currentAppId = null
   persistProductState()
   closeAuth()
   renderProduct()
@@ -952,22 +1216,71 @@ document.addEventListener('click', (event) => {
   if (authTab) openAuth((authTab.dataset.authMode as 'signup' | 'login') || 'signup')
 })
 
-document.querySelector<HTMLFormElement>('[data-auth-form]')?.addEventListener('submit', (event) => {
+document.querySelector<HTMLFormElement>('[data-auth-form]')?.addEventListener('submit', async (event) => {
   event.preventDefault()
   const form = event.currentTarget as HTMLFormElement
   const overlay = authOverlay()
   const data = new FormData(form)
   const mode = overlay?.dataset.mode || 'signup'
   const name = String(data.get('name') || '').trim()
-  const email = String(data.get('email') || '').trim()
+  const email = String(data.get('email') || '').trim().toLowerCase()
   const password = String(data.get('password') || '')
+  const confirmPassword = String(data.get('confirmPassword') || '')
   const error = overlay?.querySelector<HTMLElement>('.auth-error')
-  if (password.length < 8) { if (error) error.textContent = 'Lösenordet behöver vara minst 8 tecken.'; return }
-  if (mode === 'signup' && !name) { if (error) error.textContent = 'Fyll i ert namn för att fortsätta.'; return }
-  localStorage.setItem('flowly-user-name', name || 'Anna Andersson')
-  localStorage.setItem('flowly-user-email', email)
-  localStorage.setItem('flowly-authenticated', 'true')
-  beginOnboarding()
+
+  if (mode === 'signup') {
+    if (!name) { if (error) error.textContent = 'Fyll i ert namn för att fortsätta.'; return }
+    if (!emailRegex.test(email)) { if (error) error.textContent = 'Ange en giltig e-postadress.'; return }
+    if (password.length < 8 || !/[A-Z]/.test(password) || !/[0-9]/.test(password)) {
+      if (error) error.textContent = 'Lösenordet måste vara minst 8 tecken och innehålla minst en stor bokstav och en siffra.'
+      return
+    }
+    if (password !== confirmPassword) { if (error) error.textContent = 'Lösenorden matchar inte.'; return }
+
+    const store = readFlowlyStore()
+    if (store.users.some((user) => user.email.toLowerCase() === email)) {
+      if (error) error.textContent = 'Det finns redan ett konto med den e-postadressen.'
+      return
+    }
+
+    const passwordHash = await hashPassword(password)
+    const user: FlowlyUser = {
+      id: makeId(),
+      name,
+      email,
+      passwordHash,
+      createdAt: new Date().toISOString(),
+    }
+    store.users.push(user)
+    const workspace = ensureCurrentWorkspace(user)
+    store.session.userId = user.id
+    writeFlowlyStore(store)
+    productState.userName = user.name
+    productState.workspaceName = workspace.name
+    productState.currentAppId = null
+    productState.screen = 'projects'
+    persistProductState()
+    closeAuth()
+    renderProduct()
+    return
+  }
+
+  if (!emailRegex.test(email)) { if (error) error.textContent = 'Fel email eller lösenord.'; return }
+  const store = readFlowlyStore()
+  const user = store.users.find((entry) => entry.email.toLowerCase() === email)
+  if (!user) { if (error) error.textContent = 'Fel email eller lösenord.'; return }
+  const passwordHash = await hashPassword(password)
+  if (user.passwordHash !== passwordHash) { if (error) error.textContent = 'Fel email eller lösenord.'; return }
+  store.session.userId = user.id
+  writeFlowlyStore(store)
+  const workspace = ensureCurrentWorkspace(user)
+  productState.userName = user.name
+  productState.workspaceName = workspace.name
+  productState.currentAppId = null
+  productState.screen = 'projects'
+  persistProductState()
+  closeAuth()
+  renderProduct()
 })
 
 app.addEventListener('change', (event) => {
@@ -1010,7 +1323,14 @@ app.addEventListener('click', (event) => {
   if (topic) { productState.topic = topic.dataset.topic || ''; renderProduct(); return }
   if (target.closest('.onboarding-next')) {
     if (productState.onboardingStep === 1) { productState.customTopic = document.querySelector<HTMLTextAreaElement>('.custom-topic')?.value.trim() || ''; productState.onboardingStep = 2; persistProductState(); renderProduct() }
-    else if (productState.onboardingStep === 4) { productState.screen = 'builder'; persistProductState(); renderProduct() }
+    else if (productState.onboardingStep === 4) {
+      productState.screen = 'builder'
+      if (!productState.currentAppId) {
+        saveCurrentWorkflow()
+      }
+      persistProductState()
+      renderProduct()
+    }
     return
   }
   const field = target.closest<HTMLElement>('[data-field-index]')
@@ -1020,6 +1340,16 @@ app.addEventListener('click', (event) => {
   const action = target.closest<HTMLElement>('[data-product-action]')?.dataset.productAction
   if (action === 'back-onboarding') { productState.onboardingStep = 1; renderProduct(); return }
   if (action === 'new-workflow') { beginOnboarding(); return }
+  if (action === 'open-app') {
+    const appId = target.closest<HTMLElement>('[data-app-id]')?.dataset.appId
+    if (appId) openUserApp(appId)
+    return
+  }
+  if (action === 'delete-app') {
+    const appId = target.closest<HTMLElement>('[data-app-id]')?.dataset.appId
+    if (appId) deleteUserApp(appId)
+    return
+  }
   if (action === 'edit-workflow') { productState.screen = 'builder'; renderProduct(); return }
   if (action === 'use-workflow') { productState.screen = 'use'; renderProduct(); return }
   if (action === 'save-field') {
@@ -1032,13 +1362,29 @@ app.addEventListener('click', (event) => {
   if (action === 'preview') { productState.screen = 'use'; persistProductState(); renderProduct(); return }
   if (target.closest('[data-toggle-required]')) { const selected = productState.fields[productState.selectedField]; if (selected) { selected.required = !selected.required; persistProductState(); renderProduct() } return }
   if (action === 'remove-field') { productState.fields.splice(productState.selectedField, 1); productState.selectedField = Math.max(0, productState.selectedField - 1); persistProductState(); renderProduct(); return }
-  if (action === 'save-workflow') { productState.saved = true; persistProductState(); renderProduct(); return }
+  if (action === 'save-workflow') {
+    saveCurrentWorkflow()
+    renderProduct()
+    return
+  }
   if (action === 'publish-workflow') {
-    if (window.confirm('Redo att publicera? Efter publicering kan teammedlemmar börja använda arbetsflödet.')) { productState.published = true; productState.saved = true; persistProductState(); renderProduct() }
+    if (window.confirm('Redo att publicera? Efter publicering kan teammedlemmar börja använda arbetsflödet.')) {
+      productState.published = true
+      productState.saved = true
+      saveCurrentWorkflow()
+      renderProduct()
+    }
     return
   }
   if (action === 'export') { exportReports(); return }
-  if (action === 'logout') { localStorage.removeItem('flowly-authenticated'); window.location.reload(); return }
+  if (action === 'logout') {
+    setSessionUser(null)
+    productState.currentAppId = null
+    productState.screen = 'projects'
+    persistProductState()
+    renderProduct()
+    return
+  }
   const reportAction = target.closest<HTMLElement>('[data-report-action]')
   if (reportAction) { const report = productState.reports.find((item) => item.id === Number(reportAction.dataset.reportId)); if (report) report.status = reportAction.dataset.reportAction === 'approve' ? 'Godkänd' : 'Avvisad'; persistProductState(); renderProduct() }
 })
@@ -1117,6 +1463,22 @@ if (!reduceMotion && demo) {
     setStage(stages[index])
   }, 3800)
 }
+
+const initializeFlowly = () => {
+  const currentUser = currentUserProfile()
+  if (!currentUser) {
+    renderProduct()
+    return
+  }
+  const workspace = currentWorkspaceProfile() || ensureCurrentWorkspace(currentUser)
+  productState.userName = currentUser.name
+  productState.workspaceName = workspace.name
+  productState.screen = 'projects'
+  productState.currentAppId = null
+  renderProduct()
+}
+
+initializeFlowly()
 
 const uploadZone = document.querySelector<HTMLLabelElement>('.upload-zone')
 const uploadInput = document.querySelector<HTMLInputElement>('#file-upload')
