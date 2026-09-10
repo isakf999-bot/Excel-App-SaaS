@@ -1405,7 +1405,9 @@ h1 em, h2 em {
   font-size: 11px;
 }
 
-.reveal { opacity: 0; transform: translateY(22px); transition: opacity 1.05s var(--ease-out), transform 1.05s var(--ease-out); }
+.reveal { opacity: 1; transform: none; transition: opacity 1.05s var(--ease-out), transform 1.05s var(--ease-out); }
+html.js-ready .reveal:not(.is-visible) { opacity: 0; transform: translateY(22px); }
+html.js-ready .reveal.is-visible,
 .reveal.is-visible { opacity: 1; transform: none; }
 .hero-demo.reveal { transition-delay: .12s; }
 .steps-grid .reveal:nth-child(2),
@@ -1516,7 +1518,8 @@ h1 em, h2 em {
 
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
-  .reveal { opacity: 1; transform: none; transition: none; }
+  .reveal,
+  html.js-ready .reveal:not(.is-visible) { opacity: 1; transform: none; transition: none; }
   .xl-scan, .chaos-item, .chaos-result, .stage-panel, .hero-approve { animation: none !important; transition: none !important; }
   .button:hover, .step-card:hover, .usecase-card:hover, .approval-card:hover, .price-card:hover, .price-card.featured { transform: none; }
   .button:hover svg, .text-link:hover span { transform: none; }
@@ -1526,7 +1529,7 @@ h1 em, h2 em {
 /* Product workspace */
 .auth-overlay { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 24px; background: rgba(18, 53, 43, .42); backdrop-filter: blur(10px); }
 .auth-overlay[hidden] { display: none; }
-.auth-card { position: relative; width: min(100%, 440px); padding: 34px; border: 1px solid rgba(20, 23, 20, .1); border-radius: var(--radius-xl); background: var(--surface); box-shadow: 0 32px 90px rgba(20, 23, 20, .24); animation: result-in .45s var(--ease-out) both; }
+.auth-card { position: relative; width: min(100%, 440px); padding: 34px; border: 1px solid rgba(20, 23, 20, .1); border-radius: var(--radius-xl); background: var(--surface); box-shadow: 0 32px 90px rgba(20, 23, 20, .24); animation: result-in .45s var(--ease-out); }
 .auth-close { position: absolute; top: 18px; right: 18px; display: grid; }
 .auth-brand { margin-bottom: 32px; }
 .auth-heading h2 { max-width: 330px; margin-top: 4px; font-size: 30px; }
@@ -1553,7 +1556,7 @@ h1 em, h2 em {
 .product-stepper b { display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid var(--line-2); border-radius: 50%; font-size: 10px; font-weight: 500; }
 .product-stepper .is-active { color: var(--pine); }
 .product-stepper .is-active b { border-color: var(--pine); background: var(--pine); color: #fff; }
-.onboarding-panel { width: min(100%, 850px); margin: 0 auto; padding: 48px; border: 1px solid rgba(20, 23, 20, .08); border-radius: var(--radius-xl); background: rgba(255, 252, 248, .84); box-shadow: var(--shadow-lg); animation: result-in .6s var(--ease-out) both; }
+.onboarding-panel { width: min(100%, 850px); margin: 0 auto; padding: 48px; border: 1px solid rgba(20, 23, 20, .08); border-radius: var(--radius-xl); background: rgba(255, 252, 248, .84); box-shadow: var(--shadow-lg); animation: result-in .6s var(--ease-out); }
 .onboarding-copy { max-width: 580px; }
 .onboarding-copy h1 { margin-top: 6px; font-size: clamp(2rem, 4vw, 3.2rem); }
 .onboarding-copy > p:last-child { margin-top: 14px; color: var(--ink-2); font-size: 17px; }
@@ -1599,7 +1602,7 @@ h1 em, h2 em {
 .sidebar-bottom small { margin-top: 2px; color: #93aa9b; font-size: 9px; }
 .sidebar-bottom button { border: 0; background: transparent; color: #9db3a4; }
 .product-main { min-width: 0; padding: 50px clamp(24px, 5vw, 72px); background: #f7f5ef; }
-.product-page { width: min(100%, 1080px); margin: 0 auto; animation: result-in .55s var(--ease-out); }
+.product-page { width: min(100%, 1080px); margin: 0 auto; }
 .product-header { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 38px; }
 .product-kicker { margin: 0 0 8px; color: var(--pine); font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: .13em; text-transform: uppercase; }
 .product-header h1 { font-size: clamp(2rem, 4vw, 3rem); }

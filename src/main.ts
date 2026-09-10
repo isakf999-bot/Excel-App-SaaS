@@ -1587,9 +1587,14 @@ const observer = new IntersectionObserver(
       if (entry.isIntersecting) entry.target.classList.add('is-visible')
     })
   },
-  { threshold: 0.12 },
+  { threshold: 0, rootMargin: '0px 0px -8% 0px' },
 )
-document.querySelectorAll('.reveal').forEach((el) => observer.observe(el))
+document.querySelectorAll('.reveal').forEach((el) => {
+  const rect = el.getBoundingClientRect()
+  if (rect.bottom > 0 && rect.top < window.innerHeight) el.classList.add('is-visible')
+  observer.observe(el)
+})
+document.documentElement.classList.add('js-ready')
 
 const chaosStage = document.querySelector('#chaos-stage')
 if (chaosStage) {
