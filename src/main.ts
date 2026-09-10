@@ -1,4 +1,5 @@
 import './style.css'
+import './landing.css'
 import * as XLSX from 'xlsx'
 
 type IconName =
@@ -58,30 +59,95 @@ const icon = (name: IconName, size = 18) => {
 const av = (initials: string, tone: string) => `<span class="av av-${tone}">${initials}</span>`
 
 const navMap = [
-  ['Produkt', 'produkt'],
-  ['Så fungerar det', 'process'],
-  ['Exempel', 'exempel'],
-  ['Priser', 'priser'],
+  ['Produkt', '#/'],
+  ['Så fungerar det', '#/sa-fungerar-det'],
+  ['Användningsområden', '#/anvandning'],
+  ['Priser', '#/priser'],
+  ['FAQ', '#/faq'],
 ] as const
+
+type AppRoute =
+  | { name: 'home'; focus?: string }
+  | { name: 'how' }
+  | { name: 'pricing' }
+  | { name: 'faq' }
+  | { name: 'apps' }
+  | { name: 'new' }
+  | { name: 'app'; id: string }
+
+const parseRoute = (): AppRoute => {
+  const raw = location.hash.replace(/^#/, '').replace(/^\//, '')
+  if (raw === 'apps') return { name: 'apps' }
+  if (raw === 'apps/new') return { name: 'new' }
+  const appMatch = raw.match(/^apps\/([^/?#]+)/)
+  if (appMatch?.[1] && appMatch[1] !== 'new') return { name: 'app', id: decodeURIComponent(appMatch[1]) }
+  if (raw === 'priser') return { name: 'pricing' }
+  if (raw === 'sa-fungerar-det' || raw === 'process') return { name: 'how' }
+  if (raw === 'faq' || raw === 'fragor') return { name: 'faq' }
+  if (raw === 'anvandning') return { name: 'home', focus: 'anvandning' }
+  if (raw === 'produkt') return { name: 'home', focus: 'produkt' }
+  return { name: 'home' }
+}
+
+const overlayHashes = new Set(['cta', 'login', 'upload', 'top'])
+const isOverlayHash = () => overlayHashes.has(location.hash.replace(/^#/, '').replace(/^\//, ''))
+const isProductRoute = (route: AppRoute) => route.name === 'apps' || route.name === 'new' || route.name === 'app'
+const isMarketingPage = (route: AppRoute) => route.name === 'how' || route.name === 'pricing' || route.name === 'faq'
+
+const pageTitle = (route: AppRoute) => {
+  if (route.name === 'how') return 'Så fungerar det — Flowly'
+  if (route.name === 'pricing') return 'Priser — Flowly'
+  if (route.name === 'faq') return 'FAQ — Flowly'
+  if (route.name === 'home' && route.focus === 'anvandning') return 'Användningsområden — Flowly'
+  return 'Flowly — Från Excel till arbetsapp'
+}
+
+const currentNavHref = () => {
+  const route = parseRoute()
+  if (route.name === 'how') return '#/sa-fungerar-det'
+  if (route.name === 'pricing') return '#/priser'
+  if (route.name === 'faq') return '#/faq'
+  if (route.name === 'home' && route.focus === 'anvandning') return '#/anvandning'
+  return '#/'
+}
+
+const flowMark = (size: 'sm' | '' = '') => `
+  <span class="brand-mark${size ? ` ${size}` : ''}" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="none">
+      <circle cx="4.4" cy="12" r="2.3" fill="currentColor"/>
+      <circle cx="19.6" cy="6.2" r="2.3" fill="currentColor"/>
+      <circle cx="19.6" cy="17.8" r="2.3" fill="currentColor"/>
+      <path d="M6.6 12h5.2L17.4 7.2" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M11.8 12 17.4 16.8" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </span>
+`
+
+const pageAtmosphere = () => `
+  <div class="page-atmosphere" aria-hidden="true">
+    <div class="atm-grid"></div>
+    <div class="atm-glow atm-glow-hero"></div>
+  </div>
+`
 
 const header = () => `
   <header class="site-header">
     <div class="header-inner">
-      <a class="brand" href="#top" aria-label="Flowly startsida"><span class="brand-mark">f</span>flowly</a>
-      <nav class="desktop-nav" aria-label="Huvudmeny">${navMap.map(([label, id]) => `<a href="#${id}">${label}</a>`).join('')}</nav>
+      <a class="brand" href="#/" aria-label="Flowly startsida">${flowMark()}<span class="brand-word">Flowly</span></a>
+      <nav class="desktop-nav" aria-label="Huvudmeny">${navMap.map(([label, href]) => `<a href="${href}" class="${currentNavHref() === href ? 'is-active' : ''}">${label}</a>`).join('')}</nav>
       <div class="header-actions">
-        <a class="login-link" href="#faq">Logga in</a>
-        <a class="button button-primary button-small" href="#cta">Testa gratis ${icon('arrow', 14)}</a>
+        <a class="login-link" href="#login">Logga in</a>
+        <a class="button button-primary button-small" href="#cta">Kom igång</a>
       </div>
       <button class="icon-button mobile-menu-trigger" type="button" aria-label="Öppna meny">${icon('menu')}</button>
     </div>
   </header>
-  <a class="mobile-sticky-cta" href="#upload">Testa gratis ${icon('arrow', 15)}</a>
+  <a class="mobile-sticky-cta" href="#cta">Kom igång ${icon('arrow', 15)}</a>
   <div class="mobile-menu" aria-hidden="true">
     <button class="icon-button mobile-menu-close" type="button" aria-label="Stäng meny">${icon('close')}</button>
-    ${navMap.map(([label, id]) => `<a href="#${id}">${label}</a>`).join('')}
-    <a href="#faq">Logga in</a>
-    <a class="mobile-cta" href="#cta">Testa gratis ${icon('arrow', 16)}</a>
+    ${navMap.map(([label, href]) => `<a href="${href}" class="${currentNavHref() === href ? 'is-active' : ''}">${label}</a>`).join('')}
+    <a href="#login">Logga in</a>
+    <a class="mobile-cta" href="#cta">Kom igång ${icon('arrow', 16)}</a>
   </div>
 `
 
@@ -95,6 +161,8 @@ const excelGrid = () => {
     ['6', 'Maria Berg', '36', 'Atlas', '40', 'Godkänd'],
     ['7', 'Noah Holm', '36', 'Nova', '28', 'Skickad'],
     ['8', 'Lea Fors', '36', 'Atlas', '37', 'Godkänd'],
+    ['9', 'Maja Ek', '36', 'Nova', '35', 'Väntar'],
+    ['10', 'Oscar Dahl', '36', 'Atlas', '40', 'Godkänd'],
   ]
   return `
     <div class="xl-grid">
@@ -104,217 +172,318 @@ const excelGrid = () => {
   `
 }
 
+const lpChrome = (title: string, extra = '') => `
+  <div class="lp-ui-bar">
+    <span class="lp-ui-brand">${flowMark('sm')} ${title}</span>
+    <span class="lp-ui-dots"><i></i><i></i><i></i></span>
+  </div>
+  ${extra}
+`
+
+const formMock = () => `
+  <div class="lp-ui">
+    ${lpChrome('Ny tidrapport')}
+    <div class="lp-ui-body">
+      <label class="lp-field"><span>Vecka</span><span class="lp-input">36</span></label>
+      <label class="lp-field"><span>Projekt</span><span class="lp-input">Atlas</span></label>
+      <label class="lp-field"><span>Timmar</span><span class="lp-input">38</span></label>
+      <label class="lp-field"><span>Kommentar</span><span class="lp-input is-muted">Möten + leverans</span></label>
+      <div class="lp-form-actions">
+        <span class="lp-ghost">Spara utkast</span>
+        <span class="lp-solid">Skicka till chef</span>
+      </div>
+    </div>
+  </div>
+`
+
+const workflowMock = () => `
+  <div class="lp-ui">
+    ${lpChrome('Arbetsflöde')}
+    <div class="lp-ui-body lp-nodes">
+      <div class="lp-node"><small>01</small><strong>Anställd fyller i</strong><em>Formulär</em></div>
+      <i></i>
+      <div class="lp-node is-on"><small>02</small><strong>Chef granskar</strong><em>Godkännande</em></div>
+      <i></i>
+      <div class="lp-node"><small>03</small><strong>Ekonomi exporterar</strong><em>Excel</em></div>
+    </div>
+  </div>
+`
+
+const dashMock = () => `
+  <div class="lp-ui lp-dash">
+    ${lpChrome('Nordmark AB')}
+    <div class="lp-dash-body">
+      <aside>
+        <a class="is-on">${icon('chart', 13)} Översikt</a>
+        <a>${icon('clipboard', 13)} Uppgifter</a>
+        <a>${icon('check', 13)} Godkännanden</a>
+        <a>${icon('users', 13)} Team</a>
+      </aside>
+      <div>
+        <div class="lp-stats">
+          <div><small>Status</small><strong>23 / 25</strong><span>klara denna vecka</span></div>
+          <div><small>Uppgifter</small><strong>3</strong><span>väntar på dig</span></div>
+          <div><small>Inskickat</small><strong>18</strong><span>sedan måndag</span></div>
+        </div>
+        <div class="lp-row"><span>${av('AA', 'peach')} Anna Andersson</span><b>38 h</b><em class="ok">Godkänd</em></div>
+        <div class="lp-row is-focus"><span>${av('EJ', 'blue')} Erik Johansson</span><b>40 h</b><em class="wait">Granskas</em></div>
+        <div class="lp-row"><span>${av('SN', 'sand')} Sara Nilsson</span><b>36 h</b><em class="ok">Godkänd</em></div>
+        <div class="lp-activity">
+          <small>Senaste aktivitet</small>
+          <p>Lisa godkände Annas rapport · 09:21</p>
+          <p>Erik skickade in vecka 36 · 10:02</p>
+        </div>
+      </div>
+    </div>
+  </div>
+`
+
+const approvalMock = () => `
+  <div class="lp-ui">
+    ${lpChrome('Godkännanden')}
+    <div class="lp-ui-body">
+      <div class="lp-pipe">
+        <span>Skickad</span>
+        <i></i>
+        <span class="is-on">Granskas</span>
+        <i></i>
+        <span>Godkänd</span>
+      </div>
+      <div class="lp-row is-focus"><span>${av('EJ', 'blue')} Erik Johansson · Nova</span><b>40 h</b></div>
+      <div class="lp-row"><span>${av('JL', 'sage')} Johan Lind · Nova</span><b>32 h</b></div>
+      <div class="lp-form-actions">
+        <span class="lp-ghost">Avvisa</span>
+        <span class="lp-solid">Godkänn</span>
+      </div>
+    </div>
+  </div>
+`
+
+const activityMock = () => `
+  <div class="lp-ui">
+    ${lpChrome('Vad som händer')}
+    <div class="lp-ui-body">
+      <div class="lp-feed">
+        <div><b>09:21</b><p>Lisa godkände tidrapport · Anna Andersson</p></div>
+        <div><b>10:02</b><p>Erik skickade in vecka 36 · Nova</p></div>
+        <div><b>10:14</b><p>Ekonomi exporterade 23 godkända rader</p></div>
+        <div><b>11:03</b><p>Johan väntar på godkännande</p></div>
+      </div>
+    </div>
+  </div>
+`
+
+const messyExcel = () => `
+  <div class="lp-mess-stack">
+    <div class="lp-file-row">
+      <article class="lp-file">${icon('file', 14)} rapport_v3.xlsx</article>
+      <article class="lp-file is-dup">${icon('file', 14)} rapport_final.xlsx</article>
+      <article class="lp-file is-dup">${icon('file', 14)} rapport_FINAL2.xlsx</article>
+    </div>
+    <div class="lp-tiny-xl">
+      <div class="lp-tiny-bar"><span>X</span> tidrapportering.xlsx <em>4 versioner</em></div>
+      ${excelGrid()}
+    </div>
+  </div>
+`
+
 const hero = () => `
   <section class="hero" id="top">
     <div class="hero-aura" aria-hidden="true"></div>
-    <div class="hero-copy reveal">
-      <p class="eyebrow"><span class="eyebrow-dot"></span>Från kalkylark till arbetsflöde</p>
-      <h1>Förvandla ert <em>Excel-kaos</em> till en riktig app.</h1>
-      <p class="hero-lead">Har ni ett arbetsflöde som fortfarande lever i Excel, mejl och Teams? Ladda upp filen och gör processen enklare, strukturerad och mindre manuell.</p>
-      <div class="hero-actions">
-        <a class="button button-primary" href="#upload">Ladda upp en Excel-fil ${icon('arrow', 16)}</a>
-        <a class="text-link" href="#process">Se hur det fungerar <span>${icon('arrow', 16)}</span></a>
+    <div class="hero-split">
+      <div class="hero-copy reveal">
+        <p class="lp-kicker">Excel → arbetsapp</p>
+        <h1>Förvandla ert Excel-kaos till en <em>riktig app.</em></h1>
+        <ul class="hero-points">
+          <li>${icon('check', 16)} Börja med filen ni redan har</li>
+          <li>${icon('check', 16)} Formulär, godkännanden och dashboard</li>
+          <li>${icon('check', 16)} Inget nytt ERP-system att byta till</li>
+        </ul>
+        <div class="hero-actions">
+          <a class="button button-primary" href="#cta">Kom igång gratis</a>
+        </div>
+        <p class="trust-note">${icon('check', 14)} Ingen kod. Ingen lång implementation.</p>
       </div>
-      <p class="trust-note">${icon('check', 14)} Ingen kod. Ingen lång implementation.</p>
+      <div class="hero-visual reveal">
+        <div class="hero-app-shot" aria-hidden="true">${dashMock()}</div>
+        <div class="hero-float-card">
+          <span class="hero-float-file">${icon('file', 16)} tidrapportering.xlsx</span>
+          <i></i>
+          <span>Blir en webbapp teamet kan använda</span>
+        </div>
+      </div>
     </div>
+  </section>
+`
 
-    <div class="hero-demo reveal" id="produkt" data-stage="excel">
-      <div class="demo-meta">
-        <span class="live-dot"></span>
-        <span>Excel → Flowly → Webbapp</span>
-        <span class="demo-caption">förhandsvisning</span>
+const liveDemoShell = () => `
+  <section class="lp-livedemo" id="produkt">
+    <div class="lp-wrap">
+      <div class="lp-intro">
+        <p class="lp-kicker">Interaktiv demo</p>
+        <h2>Klicka runt i webbappen.</h2>
+        <p class="lp-lead">Detta är en förhandsvisning med exempeldata. Ni kan öppna sidor och titta — men inte lägga till, spara eller ändra något på riktigt.</p>
       </div>
-      <div class="stage-tabs" role="tablist" aria-label="Produktdemo">
-        <button type="button" class="is-active" data-panel="excel">Excel-fil</button>
-        <button type="button" data-panel="flowly">Flowly</button>
-        <button type="button" data-panel="app">Webbapp</button>
-      </div>
-      <div class="demo-stage">
-        <article class="stage-panel excel-panel" data-panel="excel">
-          <div class="xl-window">
-            <div class="xl-titlebar">
-              <span class="xl-badge">X</span>
-              <div>
-                <strong>tidrapportering.xlsx</strong>
-                <small>Ändrad idag, 08:42 · 28 rader</small>
-              </div>
-              <span class="xl-status" data-excel-status>Analyserar fil…</span>
-            </div>
-            <div class="xl-ribbon"><span>Arkiv</span><span class="is-on">Hem</span><span>Infoga</span><span>Data</span></div>
-            <div class="xl-formula"><span>fx</span> =SUM(D2:D28)</div>
-            ${excelGrid()}
-            <div class="xl-sheets"><span class="is-on">Tidrapporter</span><span>Inställningar</span><span>+</span></div>
-            <div class="xl-scan" aria-hidden="true"></div>
-          </div>
-        </article>
+    </div>
+    <div class="lp-demo-banner" role="status">
+      <strong>DEMO</strong>
+      <span>Exempelapp · Tidrapportering · Inget sparas · Ni kan inte lägga till poster</span>
+      <a class="button button-primary button-small" href="#cta">Skapa er egen app</a>
+    </div>
+    <div class="lp-demo-app" id="live-demo" data-demo-view="overview"></div>
+    <p class="lp-demo-note">All data är påhittad för demonstrationen. För att bygga er egen app behövs ett konto.</p>
+  </section>
+`
 
-        <article class="stage-panel analyze-panel" data-panel="flowly">
-          <div class="analyze-card">
-            <div class="analyze-head">
-              <span class="brand-mark sm">f</span>
-              <div>
-                <strong>Flowly analyserar arbetsflödet</strong>
-                <small>Läser kolumner, roller och godkännanden</small>
-              </div>
-            </div>
-            <ol class="analyze-steps">
-              <li data-step="0"><span>✓</span> Kolumner identifierade</li>
-              <li data-step="1"><span>✓</span> Roller identifierade</li>
-              <li data-step="2"><span>✓</span> Godkännandeflöde hittat</li>
-              <li data-step="3"><span>✓</span> Formulär skapat</li>
-            </ol>
-            <div class="analyze-map">
-              <span>Anställd fyller i</span>
-              <i></i>
-              <span>Chef godkänner</span>
-              <i></i>
-              <span>Ekonomi exporterar</span>
-            </div>
-          </div>
-        </article>
+const liveDemoData = () => [
+  { id: 'anna', name: 'Anna Andersson', project: 'Atlas', hours: 38, status: 'Godkänd', time: '09:14', initials: 'AA', tone: 'peach' },
+  { id: 'erik', name: 'Erik Johansson', project: 'Nova', hours: 40, status: 'Väntar', time: '10:02', initials: 'EJ', tone: 'blue' },
+  { id: 'sara', name: 'Sara Nilsson', project: 'Atlas', hours: 36, status: 'Godkänd', time: '08:51', initials: 'SN', tone: 'sand' },
+  { id: 'johan', name: 'Johan Lind', project: 'Nova', hours: 32, status: 'Väntar', time: '17:41', initials: 'JL', tone: 'sage' },
+  { id: 'maria', name: 'Maria Berg', project: 'Atlas', hours: 40, status: 'Godkänd', time: '08:12', initials: 'MB', tone: 'peach' },
+]
 
-        <article class="stage-panel app-panel" data-panel="app">
-          <div class="mini-app">
-            <div class="mini-app-bar">
-              <span class="mini-brand"><span class="brand-mark sm">f</span> Flowly</span>
-              <label class="mini-search">${icon('search', 12)}<span>Sök rapport eller namn</span></label>
-              <span class="mini-bell">${icon('bell', 13)}<b>2</b></span>
-              ${av('AA', 'peach')}
-            </div>
-            <div class="mini-app-body">
-              <aside class="mini-side">
-                <a class="is-on">${icon('check', 13)} Godkännanden</a>
-                <a>${icon('clipboard', 13)} Rapporter</a>
-                <a>${icon('users', 13)} Team</a>
-              </aside>
-              <div class="mini-main">
-                <div class="mini-head">
-                  <div>
-                    <small>Den här veckan</small>
-                    <h3>Veckans tidrapporter</h3>
-                  </div>
-                  <span class="badge badge-ok">3 klara</span>
-                </div>
-                <div class="mini-filters">
-                  <button type="button" class="chip is-on">Alla</button>
-                  <button type="button" class="chip">Väntar</button>
-                  <button type="button" class="chip">${icon('filter', 11)} Filter</button>
-                </div>
-                <div class="report-table">
-                  <div class="report-row" data-person="anna">${av('AA', 'peach')}<div><strong>Anna Andersson</strong><small>Atlas · 38 h · 09:14</small></div><span class="badge badge-ok">Godkänd</span></div>
-                  <div class="report-row is-focus" data-person="erik">${av('EJ', 'blue')}<div><strong>Erik Johansson</strong><small>Nova · 40 h · 10:02</small></div><span class="badge badge-wait" data-erik-status>Väntar på godkännande</span></div>
-                  <div class="report-row" data-person="sara">${av('SN', 'sand')}<div><strong>Sara Nilsson</strong><small>Atlas · 36 h · 08:51</small></div><span class="badge badge-ok">Godkänd</span></div>
-                </div>
-                <div class="hero-approve">
-                  <p>Erik väntar på din signatur.</p>
-                  <button type="button" class="button button-primary button-tiny approve-demo">Godkänn rapport</button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </article>
+type DemoView = 'overview' | 'inbox' | 'approvals' | 'team' | 'activity'
+
+const renderLiveDemoView = (view: DemoView, selectedId = 'erik') => {
+  const rows = liveDemoData()
+  const waiting = rows.filter((row) => row.status === 'Väntar').length
+  const done = rows.filter((row) => row.status === 'Godkänd').length
+  const selected = rows.find((row) => row.id === selectedId) ?? rows[1]
+  const nav = [
+    ['overview', 'chart', 'Översikt'],
+    ['inbox', 'clipboard', 'Rapporter'],
+    ['approvals', 'check', 'Godkännanden'],
+    ['team', 'users', 'Team'],
+    ['activity', 'eye', 'Aktivitet'],
+  ] as const
+
+  const body = view === 'overview' ? `
+    <div class="lp-demo-head"><div><small>Nordmark AB · Demo</small><h3>Veckans tidrapporter</h3></div><span class="lp-demo-pill">${done} av ${rows.length} klara</span></div>
+    <div class="lp-stats">
+      <div><small>Status</small><strong>${done} / ${rows.length}</strong><span>godkända</span></div>
+      <div><small>Väntar</small><strong>${waiting}</strong><span>på godkännande</span></div>
+      <div><small>Inskickat</small><strong>${rows.length}</strong><span>denna vecka</span></div>
+    </div>
+    ${rows.slice(0, 4).map((row) => `<button type="button" class="lp-demo-row${row.id === selectedId ? ' is-on' : ''}" data-demo-open="${row.id}"><span>${av(row.initials, row.tone)} ${row.name}</span><b>${row.hours} h</b><em class="${row.status === 'Godkänd' ? 'ok' : 'wait'}">${row.status}</em></button>`).join('')}
+  ` : view === 'inbox' ? `
+    <div class="lp-demo-head"><div><small>Rapporter</small><h3>Alla inskickade</h3></div><button type="button" class="lp-demo-locked" data-demo-locked="add">${icon('plus', 14)} Ny rapport</button></div>
+    <div class="lp-demo-table">
+      <div class="lp-demo-thead"><span>Namn</span><span>Projekt</span><span>Timmar</span><span>Status</span></div>
+      ${rows.map((row) => `<button type="button" class="lp-demo-trow${row.id === selectedId ? ' is-on' : ''}" data-demo-open="${row.id}"><span>${av(row.initials, row.tone)} ${row.name}</span><span>${row.project}</span><span>${row.hours} h</span><em class="${row.status === 'Godkänd' ? 'ok' : 'wait'}">${row.status}</em></button>`).join('')}
+    </div>
+  ` : view === 'approvals' ? `
+    <div class="lp-demo-head"><div><small>Godkännanden</small><h3>${waiting} väntar i demon</h3></div></div>
+    <div class="lp-pipe"><span>Skickad</span><i></i><span class="is-on">Granskas</span><i></i><span>Godkänd</span></div>
+    ${rows.filter((row) => row.status === 'Väntar').map((row) => `<div class="lp-demo-row is-on"><span>${av(row.initials, row.tone)} ${row.name} · ${row.project}</span><b>${row.hours} h</b><button type="button" class="lp-demo-locked" data-demo-locked="approve">Godkänn</button></div>`).join('')}
+    <p class="lp-demo-hint">Godkännanden går inte att genomföra i demon.</p>
+  ` : view === 'team' ? `
+    <div class="lp-demo-head"><div><small>Team</small><h3>Vilka som använder appen</h3></div><button type="button" class="lp-demo-locked" data-demo-locked="invite">${icon('plus', 14)} Bjud in</button></div>
+    ${[['AA','peach','Anna Andersson','Anställd'],['EJ','blue','Erik Johansson','Anställd'],['LL','sand','Lisa Lind','Chef'],['KE','sage','Karin Ek','Ekonomi']].map(([ini, tone, name, role]) => `<div class="lp-demo-row"><span>${av(String(ini), String(tone))} ${name}</span><em>${role}</em></div>`).join('')}
+  ` : `
+    <div class="lp-demo-head"><div><small>Aktivitet</small><h3>Vad som händer</h3></div></div>
+    <div class="lp-feed">
+      <div><b>09:21</b><p>Lisa godkände tidrapport · Anna Andersson</p></div>
+      <div><b>10:02</b><p>Erik skickade in vecka 36 · Nova</p></div>
+      <div><b>10:14</b><p>Ekonomi exporterade 23 godkända rader</p></div>
+      <div><b>11:03</b><p>Johan väntar på godkännande</p></div>
+    </div>
+  `
+
+  const detail = selected ? `
+    <aside class="lp-demo-detail">
+      <small>Vald rapport · skrivskyddad</small>
+      <h4>${selected.name}</h4>
+      <p>${selected.project} · ${selected.hours} timmar · ${selected.time}</p>
+      <label>Vecka<input value="36" readonly /></label>
+      <label>Projekt<input value="${selected.project}" readonly /></label>
+      <label>Timmar<input value="${selected.hours}" readonly /></label>
+      <button type="button" class="lp-demo-locked" data-demo-locked="edit">Redigera fält</button>
+    </aside>
+  ` : ''
+
+  return `
+    <div class="lp-demo-chrome">
+      <span>${flowMark('sm')} Flowly demo</span>
+      <strong>Ni tittar på en demo</strong>
+      <em>Inget konto · Inget sparas</em>
+    </div>
+    <div class="lp-demo-body">
+      <aside>
+        <p>Nordmark AB</p>
+        ${nav.map(([id, ic, label]) => `<button type="button" data-demo-view="${id}" class="${view === id ? 'is-on' : ''}">${icon(ic, 14)} ${label}${id === 'approvals' && waiting ? `<b>${waiting}</b>` : ''}</button>`).join('')}
+      </aside>
+      <div class="lp-demo-main">${body}</div>
+      ${view === 'inbox' || view === 'overview' ? detail : ''}
+    </div>
+  `
+}
+
+const valueStrip = () => `
+  <section class="lp-strip">
+    <div class="lp-wrap">
+      <p class="lp-kicker reveal">Från Excel till fungerande arbetsflöde</p>
+      <div class="lp-strip-inner reveal">
+        ${[
+          [icon('file', 16), 'Excel', 'Filen ni redan har'],
+          [icon('layers', 16), 'Struktur', 'Kolumner blir fält'],
+          [icon('clipboard', 16), 'Formulär', 'Teamet fyller i'],
+          [icon('check', 16), 'Godkännanden', 'Rätt person signerar'],
+          [icon('chart', 16), 'Dashboard', 'Alla ser läget'],
+        ].map(([ic, title, note], index) => `<div class="lp-strip-item">${index ? '<i aria-hidden="true"></i>' : ''}<span>${ic}</span><b>${title}</b><small>${note}</small></div>`).join('')}
       </div>
     </div>
   </section>
 `
 
 const chaos = () => `
-  <section class="story-section chaos-section" id="exempel">
-    <div class="section-intro reveal">
-      <p class="eyebrow">01 — 02</p>
-      <h2>Ni har redan processen.<br /><em>Problemet är allt runt omkring.</em></h2>
-      <p>Det börjar med en enkel fil. Sedan kommer mejlen, Teams-trådarna och versionerna som heter <strong>rapport_FINAL.xlsx</strong>.</p>
-    </div>
-    <div class="chaos-stage reveal" id="chaos-stage">
-      <article class="chaos-item file f1">${icon('file', 14)} rapport.xlsx</article>
-      <article class="chaos-item file f2">${icon('file', 14)} rapport_final.xlsx</article>
-      <article class="chaos-item file f3">${icon('file', 14)} rapport_final2.xlsx</article>
-      <article class="chaos-item file f4">${icon('file', 14)} rapport_FINAL.xlsx</article>
-      <article class="chaos-item msg m1">${icon('message', 14)}<div><strong>Teams · Lisa</strong><small>Kan du kolla senaste filen?</small></div></article>
-      <article class="chaos-item msg m2">${icon('mail', 14)}<div><strong>Fwd: tidrapport v.36</strong><small>Ekonomi behöver underlaget idag.</small></div></article>
-      <article class="chaos-item note n1">Glöm inte kopiera till ekonomi-fliken innan du skickar.</article>
-      <article class="chaos-item sheet s1">
-        <div class="tiny-sheet"><span></span><span></span><span></span><span></span><span></span><span></span></div>
-        <small>Manuell dubbelregistrering</small>
-      </article>
-      <div class="chaos-result">
-        <div class="brand-row"><span class="brand-mark">f</span> En process. En källa.</div>
-        <div class="chaos-app">
-          <div class="chaos-app-row">${av('AA', 'peach')}<span>Anna Andersson</span><b>38 h</b><em>Godkänd</em></div>
-          <div class="chaos-app-row">${av('EJ', 'blue')}<span>Erik Johansson</span><b>40 h</b><em class="wait">Väntar</em></div>
-          <div class="chaos-app-row">${av('SN', 'sand')}<span>Sara Nilsson</span><b>36 h</b><em>Godkänd</em></div>
+  <section class="lp-section lp-problem" id="exempel">
+    <div class="lp-wrap">
+      <div class="lp-split">
+        <div class="lp-copy reveal">
+          <p class="lp-kicker">Problemet</p>
+          <h2>Excel fungerar.<br /><em>Tills det inte gör det.</em></h2>
+          <p class="lp-lead">Det börjar med en enkel fil. Sedan kommer versionerna, mejlen och osäkerheten om vem som gjort vad.</p>
+          <div class="lp-problem-list">
+            ${[
+              'Flera versioner av samma fil',
+              'Information som försvinner i Teams och mejl',
+              'Manuella uppdateringar',
+              'Svårt att veta vem som gjort vad',
+              'Inga tydliga godkännanden',
+              'Svårt att följa processen',
+            ].map((item) => `<div>${icon('file', 14)}<span>${item}</span></div>`).join('')}
+          </div>
+        </div>
+        <div class="reveal lp-mess" id="chaos-stage">
+          ${messyExcel()}
+          <div class="lp-mess-notes">
+            <span>${icon('message', 13)} Kan du kolla senaste filen?</span>
+            <span>${icon('mail', 13)} Fwd: tidrapport v.36</span>
+          </div>
         </div>
       </div>
-    </div>
-    <div class="section-next-step reveal">
-      <div>
-        <strong>Känner ni igen er?</strong>
-        <p>Börja med det arbetsflöde som skapar mest manuellt arbete.</p>
-      </div>
-      <a class="text-link" href="#upload">Visa hur Flowly löser det ${icon('arrow', 16)} </a>
     </div>
   </section>
 `
 
 const transform = () => `
-  <section class="story-section transform-section" id="process">
-    <div class="section-intro centered reveal">
-      <p class="eyebrow">03</p>
-      <h2>Behåll processen.<br /><em>Ta bort kaoset.</em></h2>
-      <p>Flowly kräver inte att ni byter ut allt. Vi gör det manuella arbetet runt era befintliga system enklare.</p>
-    </div>
-    <div class="transform-stage reveal">
-      <div class="before-col">
-        <p class="col-label">Före</p>
-        <div class="before-stack">
-          <div class="before-card">${icon('file', 16)} Excel</div>
-          <div class="before-card">${icon('mail', 16)} Mejl</div>
-          <div class="before-card">${icon('message', 16)} Teams</div>
-          <div class="before-card">${icon('clipboard', 16)} Manuella steg</div>
+  <section class="lp-section lp-transform-band">
+    <div class="lp-wrap">
+      <div class="lp-intro reveal">
+        <p class="lp-kicker">Förvandlingen</p>
+        <h2>Gör Excel till en <em>riktig arbetsapp.</em></h2>
+      </div>
+      <div class="lp-transform reveal">
+        <div class="lp-transform-col">
+          <h3>Så ser det ut idag</h3>
+          ${messyExcel()}
         </div>
-      </div>
-      <div class="transform-axis" aria-hidden="true">
-        <span>Flowly</span>
-        <i></i>
-      </div>
-      <div class="after-col">
-        <p class="col-label">Efter</p>
-        <ol class="after-flow">
-          <li>
-            <div class="after-ui form-ui">
-              <small>Formulär</small>
-              <label>Vecka 36</label>
-              <span class="fake-input">38 timmar</span>
-            </div>
-          </li>
-          <li>
-            <div class="after-ui flow-ui">
-              <small>Arbetsflöde</small>
-              <div class="pips"><i class="done"></i><i class="done"></i><i></i></div>
-              <span>Chef nästa</span>
-            </div>
-          </li>
-          <li>
-            <div class="after-ui approve-ui">
-              <small>Godkännande</small>
-              <strong>Erik Johansson · 40 h</strong>
-              <div class="mini-actions"><span>Godkänn</span><span class="ghost">Avvisa</span></div>
-            </div>
-          </li>
-          <li>
-            <div class="after-ui dash-ui">
-              <small>Dashboard</small>
-              <strong>23 / 25 klara</strong>
-              <div class="bar"><i></i></div>
-            </div>
-          </li>
-          <li>
-            <div class="after-ui export-ui">
-              <small>Export</small>
-              <span>${icon('upload', 13)} tillbaka till Excel</span>
-            </div>
-          </li>
-        </ol>
+        <div class="lp-mid">${flowMark()}<b>Flowly</b><i></i></div>
+        <div class="lp-transform-col is-app">
+          <h3>Så kan det se ut imorgon</h3>
+          ${dashMock()}
+        </div>
       </div>
     </div>
   </section>
@@ -678,20 +847,6 @@ const saveCurrentWorkflow = () => {
   return nextApp
 }
 
-type AppRoute =
-  | { name: 'marketing' }
-  | { name: 'apps' }
-  | { name: 'new' }
-  | { name: 'app'; id: string }
-
-const parseRoute = (): AppRoute => {
-  const raw = location.hash.replace(/^#/, '')
-  if (raw === '/apps' || raw === 'apps') return { name: 'apps' }
-  if (raw === '/apps/new' || raw === 'apps/new') return { name: 'new' }
-  const appMatch = raw.match(/^\/?apps\/([^/?#]+)/)
-  if (appMatch?.[1] && appMatch[1] !== 'new') return { name: 'app', id: decodeURIComponent(appMatch[1]) }
-  return { name: 'marketing' }
-}
 
 const setAppHash = (path: string) => {
   const next = path.startsWith('#') ? path : `#${path}`
@@ -720,7 +875,7 @@ const authModal = () => `
   <div class="auth-overlay" id="auth-overlay" hidden>
     <div class="auth-card" role="dialog" aria-modal="true" aria-labelledby="auth-title">
       <button type="button" class="icon-button auth-close" aria-label="Stäng">${icon('close', 17)}</button>
-      <span class="brand auth-brand"><span class="brand-mark">f</span>flowly</span>
+      <span class="brand auth-brand">${flowMark()}<span class="brand-word">Flowly</span></span>
       <div class="auth-heading"><p class="eyebrow">${icon('spark', 12)} Flowly workspace</p><h2 id="auth-title">Skapa ditt Flowly-konto</h2><p class="auth-description">Skapa ett gratis konto och bygg ert första arbetsflöde.</p></div>
       <div class="auth-tabs"><button type="button" class="auth-tab is-active" data-auth-mode="signup">Skapa konto</button><button type="button" class="auth-tab" data-auth-mode="login">Logga in</button></div>
       <form class="auth-form" data-auth-form>
@@ -749,7 +904,7 @@ const productSidebar = () => {
   const appNav = [['dashboard', 'chart', 'Översikt'], ['builder', 'clipboard', 'Formulär'], ['workflows', 'workflow', 'Arbetsflöde'], ['approvals', 'check', 'Godkännanden'], ['team', 'users', 'Team']] as const
   return `
     <aside class="product-sidebar">
-      <a class="product-brand" href="#/apps" data-product-action="back-to-apps"><span class="brand-mark">f</span><strong>flowly</strong></a>
+      <a class="product-brand" href="#/apps" data-product-action="back-to-apps">${flowMark()}<strong>Flowly</strong></a>
       <div class="workspace-switcher">${av(initials.slice(0, 2).toUpperCase() || 'FU', 'sand')}<span><small>Workspace</small>${escapeHtml(workspace?.name || 'Flowly workspace')}</span></div>
       <nav class="product-nav">
         <p>Workspace</p>
@@ -879,62 +1034,105 @@ const productContent = () => {
   return dashboardView()
 }
 
-const productShell = () => productState.screen === 'onboarding' ? `<div class="onboarding-shell"><div class="onboarding-top"><button type="button" class="brand" data-product-action="back-to-apps"><span class="brand-mark">f</span>flowly</button><div class="onboarding-top-actions"><button type="button" class="text-link" data-product-action="back-to-apps">${icon('arrow', 14)} Mina appar</button><button type="button" class="text-link" data-product-action="logout">Logga ut</button></div></div>${onboardingSteps()}${onboardingView()}</div>` : `<div class="product-shell">${productSidebar()}<main class="product-main">${productContent()}</main></div>`
+const productShell = () => productState.screen === 'onboarding' ? `<div class="onboarding-shell"><div class="onboarding-top"><button type="button" class="brand" data-product-action="back-to-apps">${flowMark()}Flowly</button><div class="onboarding-top-actions"><button type="button" class="text-link" data-product-action="back-to-apps">${icon('arrow', 14)} Mina appar</button><button type="button" class="text-link" data-product-action="logout">Logga ut</button></div></div>${onboardingSteps()}${onboardingView()}</div>` : `<div class="product-shell">${productSidebar()}<main class="product-main">${productContent()}</main></div>`
 
 const steps = () => `
-  <section class="story-section steps-section" id="upload">
-    <div class="section-intro split reveal">
-      <div>
-        <p class="eyebrow">Så fungerar det</p>
-        <h2>Från fil till <em>färdigt flöde.</em></h2>
+  <section class="lp-section lp-how" id="process">
+    <div class="lp-wrap">
+      <div class="lp-intro reveal">
+        <p class="lp-kicker">Så fungerar det</p>
+        <h2>Tre steg. <em>Ett arbetsflöde.</em></h2>
+        <p class="lp-lead">Börja med filen ni redan använder. Flowly gör den till något teamet faktiskt kan arbeta i.</p>
       </div>
-      <p>Tre steg. Ett arbetsflöde som teamet faktiskt vill använda.</p>
+      <div class="lp-steps">
+        <article class="lp-step reveal" id="upload">
+          <div>
+            <span class="lp-step-num">01</span>
+            <h3>Ladda upp er Excel-fil</h3>
+            <p>Visa oss filen som processen redan lever i. Flowly läser kolumner, rader och struktur lokalt i webbläsaren.</p>
+            <label class="upload-zone" for="file-upload">
+              <input id="file-upload" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" />
+              <span class="upload-symbol">${icon('upload', 22)}</span>
+              <strong class="upload-label">Släpp din Excel-fil här</strong>
+              <small>eller välj fil från datorn · .xlsx eller .xls</small>
+            </label>
+          </div>
+          <div class="lp-step-visual">
+            <div class="lp-ui">
+              ${lpChrome('tidrapportering.xlsx')}
+              <div class="lp-ui-body">${excelGrid()}</div>
+            </div>
+          </div>
+        </article>
+        <article class="lp-step reveal">
+          <div>
+            <span class="lp-step-num">02</span>
+            <h3>Bygg ert arbetsflöde</h3>
+            <p>Beskriv hur filen används idag. Flowly föreslår formulär, roller och godkännandesteg som ni kan justera.</p>
+          </div>
+          <div class="lp-step-visual">${workflowMock()}</div>
+        </article>
+        <article class="lp-step reveal">
+          <div>
+            <span class="lp-step-num">03</span>
+            <h3>Börja använda er app</h3>
+            <p>Teamet fyller i, chefer godkänner och ni ser statusen utan att öppna Excel. Exporten finns kvar när ni behöver den.</p>
+          </div>
+          <div class="lp-step-visual">${dashMock()}</div>
+        </article>
+      </div>
+      ${uploadResult()}
     </div>
-    <div class="steps-grid">
-      <article class="step-card reveal">
-        <span class="step-num">01</span>
-        <h3>Ladda upp</h3>
-        <p>Ladda upp Excel-filen ni redan använder.</p>
-        <label class="upload-zone" for="file-upload">
-          <input id="file-upload" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" />
-          <span class="upload-symbol">${icon('upload', 22)}</span>
-          <strong class="upload-label">Släpp din Excel-fil här</strong>
-          <small>eller välj fil från datorn</small>
-        </label>
-        <small class="upload-note">.xlsx eller .xls · Börja med arbetsflödet ni redan använder.</small>
-      </article>
-      <article class="step-card reveal">
-        <span class="step-num">02</span>
-        <h3>Beskriv processen</h3>
-        <p>Berätta vad filen används till och vilka som ska använda den.</p>
-        <div class="chat-card">
-          ${av('DU', 'peach')}
-          <p>Våra anställda fyller i timmar varje vecka. Chefen godkänner och ekonomi exporterar underlaget.</p>
-        </div>
-        <div class="typing">${icon('spark', 13)} Flowly läser in processen</div>
-      </article>
-      <article class="step-card reveal">
-        <span class="step-num">03</span>
-        <h3>Börja arbeta</h3>
-        <p>Flowly skapar ett strukturerat arbetsflöde som hela teamet kan använda.</p>
-        <div class="born-app">
-          <div class="born-top"><span class="mini-brand"><span class="brand-mark sm">f</span> Flowly</span><span class="badge badge-ok">Live</span></div>
-          <small>Veckans översikt</small>
-          <strong>23 av 25 rapporter klara</strong>
-          <div class="bar"><i></i></div>
-        </div>
-      </article>
-    </div>
-    ${uploadResult()}
   </section>
 `
 
 const dashboard = () => `
-  <section class="story-section product-section">
-    <div class="section-intro centered reveal">
-      <p class="eyebrow">04</p>
-      <h2>Nu arbetar teamet i <em>en riktig app.</em></h2>
-      <p>Från Excel-rader till ett arbetsflöde hela teamet kan använda. Statusen är synlig för alla — inte gömd i en mejltråd.</p>
+  <section class="lp-show">
+    <div class="lp-wrap lp-split">
+      <div class="lp-copy reveal">
+        <p class="lp-kicker">Formulär</p>
+        <h2>Ett formulär som <em>faktiskt fungerar.</em></h2>
+        <p class="lp-lead">Förvandla manuella Excel-rader till tydliga formulär som teamet faktiskt kan använda.</p>
+      </div>
+      <div class="reveal">${formMock()}</div>
+    </div>
+  </section>
+  <section class="lp-show lp-show-alt">
+    <div class="lp-wrap lp-split reverse">
+      <div class="reveal">${dashMock()}</div>
+      <div class="lp-copy reveal">
+        <p class="lp-kicker">Dashboard</p>
+        <h2>Allt på <em>ett ställe.</em></h2>
+        <p class="lp-lead">Status, uppgifter, inskickningar, statistik och senaste aktivitet — utan att öppna en ny fil.</p>
+      </div>
+    </div>
+  </section>
+  <section class="lp-show">
+    <div class="lp-wrap lp-split">
+      <div class="lp-copy reveal">
+        <p class="lp-kicker">Godkännanden</p>
+        <h2>Godkännanden utan <em>mejltrådar.</em></h2>
+        <p class="lp-lead">Skickad, granskas, godkänd. Rätt person ser rätt sak, och ni slipper jaga signaturer i inkorgen.</p>
+      </div>
+      <div class="reveal">${approvalMock()}</div>
+    </div>
+  </section>
+  <section class="lp-show lp-show-alt">
+    <div class="lp-wrap lp-split reverse">
+      <div class="reveal">${activityMock()}</div>
+      <div class="lp-copy reveal">
+        <p class="lp-kicker">Synlighet</p>
+        <h2>Alla vet <em>vad som händer.</em></h2>
+        <p class="lp-lead">En gemensam bild av processen. Vem som skickat, vem som väntar och vad som redan är klart.</p>
+      </div>
+    </div>
+  </section>
+  <section class="story-section product-section band-dark lp-product-frame">
+    <div class="lp-wrap">
+      <div class="lp-intro reveal">
+        <p class="lp-kicker">Produkten</p>
+        <h2>Så ser arbetsdagen ut i <em>Flowly.</em></h2>
+      </div>
     </div>
     <div class="product-frame reveal" id="product-demo">
       <div class="frame-bar">
@@ -943,7 +1141,7 @@ const dashboard = () => `
       </div>
       <div class="dashboard-shell">
         <aside class="dashboard-sidebar">
-          <div class="dash-brand"><span class="brand-mark">f</span> flowly</div>
+          <div class="dash-brand">${flowMark()} Flowly</div>
           <div class="dash-workspace">${av('N', 'sand')}<span>Nordmark AB</span></div>
           <nav>
             <a href="#product-demo">${icon('chart', 15)} Översikt</a>
@@ -956,7 +1154,7 @@ const dashboard = () => `
           </nav>
         </aside>
         <div class="dashboard-content">
-          <div class="dash-mobile-top"><span class="mini-brand"><span class="brand-mark sm">f</span> Flowly</span>${av('AA', 'peach')}</div>
+          <div class="dash-mobile-top"><span class="mini-brand">${flowMark('sm')} Flowly</span>${av('AA', 'peach')}</div>
           <div class="dash-header">
             <div>
               <p class="crumb">Arbetsyta / Godkännanden</p>
@@ -1022,12 +1220,12 @@ const dashboard = () => `
 
 const useCases = () => {
   const items = [
-    ['clock', 'Tidrapportering', 'Få in timmarna direkt från teamet och låt rätt person godkänna.', 'timesheet'],
-    ['shield', 'Kvalitetskontroller', 'Gör checklistor, avvikelser och uppföljning till en tydlig rutin.', 'quality'],
-    ['layers', 'Avvikelsehantering', 'Samla rapporter, bilder, ansvariga och status på ett ställe.', 'deviation'],
-    ['box', 'Beställningar', 'Fånga behov, godkänn inköp och följ leveransen utan mejltrådar.', 'orders'],
-    ['chart', 'Projektuppföljning', 'Se läget i projekten medan det fortfarande går att påverka.', 'project'],
-    ['clipboard', 'Interna checklistor', 'Gör återkommande arbete enklare att utföra och följa upp.', 'checks'],
+    ['clock', 'Tidrapportering', 'Byt ut manuella tidrapporter mot ett enkelt arbetsflöde.', 'timesheet'],
+    ['box', 'Orderhantering', 'Samla order, status och uppföljning på ett ställe.', 'orders'],
+    ['shield', 'Kvalitetskontroller', 'Digitalisera checklistor och kontroller.', 'quality'],
+    ['layers', 'Avvikelser', 'Registrera, hantera och följa upp avvikelser.', 'deviation'],
+    ['chart', 'Projektuppföljning', 'Samla projektdata och status utan flera Excel-filer.', 'project'],
+    ['clipboard', 'Interna checklistor', 'Gör återkommande processer enkla att följa.', 'checks'],
   ] as const
 
   const previews: Record<string, string> = {
@@ -1040,13 +1238,12 @@ const useCases = () => {
   }
 
   return `
-    <section class="story-section usecase-section">
-      <div class="section-intro split reveal">
-        <div>
-          <p class="eyebrow">05</p>
-          <h2>Alla kan använda den.<br /><em>Samma process, rätt vy.</em></h2>
-        </div>
-        <p>Det som idag kräver påminnelser och kopiering kan bli ett arbetsflöde med roller, behörigheter och tydliga nästa steg.</p>
+    <section class="lp-section lp-usecases" id="anvandning">
+      <div class="lp-wrap">
+      <div class="lp-intro reveal">
+        <p class="lp-kicker">Användningsområden</p>
+        <h2>Vad kan ni bygga med <em>Flowly?</em></h2>
+        <p class="lp-lead">Samma produkt. Olika processer. Börja med det arbetsflöde som skapar mest manuellt arbete.</p>
       </div>
       <div class="usecase-grid">
         ${items.map(([ic, title, body, key]) => `
@@ -1060,42 +1257,58 @@ const useCases = () => {
           </article>
         `).join('')}
       </div>
+      </div>
     </section>
   `
 }
 
 const integration = () => `
-  <section class="story-section difference-section">
-    <div class="difference-copy reveal">
-      <p class="eyebrow">06</p>
-      <h2>Ni behöver inte byta <em>era system.</em></h2>
-      <p><strong>Nej. Flowly är inte ett nytt ERP-system.</strong> Vi strukturerar processerna som idag hamnar mellan Excel, mejl, Teams och era befintliga system.</p>
-      <ul>
-        <li><span>${icon('check', 14)}</span>Börja med Excel-filen ni redan har</li>
-        <li><span>${icon('check', 14)}</span>Rätt person ser rätt saker</li>
-        <li><span>${icon('check', 14)}</span>Behåll exporten till Excel</li>
-      </ul>
+  <section class="lp-break">
+    <div class="lp-wrap lp-split">
+      <div class="reveal">
+        <p class="lp-kicker">Börja litet</p>
+        <h2>Ni behöver inte byta allt.<br />Börja med en enda Excel-fil.</h2>
+        <p>Flowly är inte ett nytt ERP-system. Det är ett enklare lager för de processer som idag hamnar mellan Excel, mejl och era befintliga system.</p>
+      </div>
+      <div class="reveal">${formMock()}</div>
     </div>
-    <div class="export-frame reveal">
-      <div class="export-window">
-        <div class="export-head">
-          <strong>Exportera vecka 36</strong>
-          <small>23 godkända rapporter</small>
-        </div>
-        <label class="export-option is-on">${icon('file', 16)} Excel (.xlsx)<small>Tillbaka till filen ni redan har</small></label>
-        <label class="export-option">${icon('mail', 16)} Skicka till ekonomi<small>Underlag till nästa steg i kedjan</small></label>
-        <button type="button" class="button button-primary button-full">Exportera underlag</button>
+  </section>
+  <section class="lp-section">
+    <div class="lp-wrap">
+      <div class="lp-intro reveal">
+        <p class="lp-kicker">Funktioner</p>
+        <h2>Det ni behöver. <em>Inget mer.</em></h2>
+      </div>
+      <div class="lp-feature-grid">
+        ${[
+          ['file', 'Excel → App', 'Börja med det ni redan använder.'],
+          ['clipboard', 'Anpassade formulär', 'Skapa formulär för exakt ert arbetsflöde.'],
+          ['users', 'Roller & användare', 'Alla får rätt åtkomst.'],
+          ['check', 'Godkännanden', 'Skapa tydliga steg i processen.'],
+          ['chart', 'Dashboard', 'Se vad som händer utan att öppna Excel.'],
+          ['upload', 'Export', 'Behåll möjligheten att arbeta vidare med data.'],
+        ].map(([ic, title, body]) => `<article class="lp-card reveal"><span class="lp-feat-icon">${icon(ic as IconName, 18)}</span><h3>${title}</h3><p>${body}</p></article>`).join('')}
+      </div>
+    </div>
+  </section>
+  <section class="lp-proof">
+    <div class="lp-wrap">
+      <div class="lp-proof-box reveal">
+        <p class="lp-kicker">Tidigt skede</p>
+        <h2>Byggt för företag som fortfarande lever i Excel.</h2>
+        <p>Flowly formas kring riktiga arbetsflöden — tidrapporter, kontroller, ordrar och uppföljning som idag sköts i kalkylark. Inga påhittade kundcase. Bara produkten, så långt den faktiskt finns.</p>
       </div>
     </div>
   </section>
 `
 
 const pricing = () => `
-  <section class="story-section pricing-section" id="priser">
-    <div class="section-intro centered reveal">
-      <p class="eyebrow">Priser</p>
+  <section class="lp-section lp-pricing" id="priser">
+    <div class="lp-wrap">
+    <div class="lp-intro reveal">
+      <p class="lp-kicker">Priser</p>
       <h2>Växla upp när <em>ni är redo.</em></h2>
-      <p>Börja litet. Bygg vidare när processen växer.</p>
+      <p class="lp-lead">Börja litet. Bygg vidare när processen växer.</p>
     </div>
     <div class="pricing-grid">
       <article class="price-card reveal">
@@ -1123,91 +1336,125 @@ const pricing = () => `
     </div>
     <div class="pricing-next-step reveal">
       <div><strong>Börja med ett arbetsflöde.</strong><span>Testa Flowly och se om det passar processen ni redan har.</span></div>
-      <a class="button button-primary" href="#upload">Testa Flowly gratis ${icon('arrow', 16)}</a>
+      <a class="button button-primary" href="#cta">Kom igång gratis ${icon('arrow', 16)}</a>
+    </div>
     </div>
   </section>
 `
 
-const roles = () => `
-  <section class="story-section roles-section">
-    <div class="role-banner reveal">
-      <div>
-        <p class="eyebrow">Byggt för team som gör jobbet</p>
-        <h2>Samma produkt.<br /><em>Olika ansvar.</em></h2>
-      </div>
-      <p>Ekonomi, operations, projektledning, HR, produktion och administration. Mindre att jaga. Mer att få gjort.</p>
-    </div>
-    <div class="role-list">
-      ${['Ekonomi', 'Operations', 'Projektledning', 'HR', 'Produktion', 'Administration'].map((role) => `<span>${role}</span>`).join('')}
-    </div>
-  </section>
-`
+const roles = () => ''
 
 const faq = () => `
-  <section class="story-section faq-section" id="faq">
-    <div class="section-intro centered reveal">
-      <p class="eyebrow">Frågor</p>
-      <h2>Det ni undrar <em>innan ni börjar.</em></h2>
-    </div>
-    <div class="faq-list reveal">
-      ${[
-        ['Måste vi sluta använda Excel?', 'Nej. Flowly kan börja med de Excel-filer ni redan använder.'],
-        ['Behöver vi kunna programmera?', 'Nej. Ni beskriver processen på vanlig svenska, sedan hjälper Flowly er vidare.'],
-        ['Hur lång tid tar det att komma igång?', 'Det beror på arbetsflödet. Börja med en fil och beskriv hur ni använder den, så ser ni snabbt vad som behöver struktureras.'],
-        ['Måste vi byta vårt ERP-system?', 'Nej. Flowly är inte ett nytt ERP-system utan ett enklare lager för manuella processer mellan era befintliga system.'],
-        ['Kan vi exportera data till Excel?', 'Ja. Era data är era och kan exporteras tillbaka till Excel när ni behöver.'],
-        ['Kan flera personer använda samma arbetsflöde?', 'Ja, med olika roller och behörigheter för varje steg i processen.'],
-        ['Vad händer om Flowly inte passar vårt arbetsflöde?', 'Då har ni fått en tydligare bild av processen utan att behöva byta ut era befintliga system.'],
-      ].map(([q, a], i) => `<details ${i === 0 ? 'open' : ''}><summary>${q}<span>+</span></summary><p>${a}</p></details>`).join('')}
+  <section class="lp-section lp-faq" id="faq">
+    <div class="lp-wrap">
+      <div class="lp-intro reveal">
+        <p class="lp-kicker">Frågor</p>
+        <h2>Det ni undrar <em>innan ni börjar.</em></h2>
+      </div>
+      <div class="faq-list reveal">
+        ${[
+          ['Måste vi sluta använda Excel?', 'Nej. Flowly börjar med de Excel-filer ni redan använder. Ni kan fortsätta exportera tillbaka när ni behöver.'],
+          ['Behöver vi byta vårt nuvarande system?', 'Nej. Flowly är inte ett nytt ERP-system. Det är ett lager för de manuella processerna som idag hamnar mellan Excel, mejl och era befintliga system.'],
+          ['Kan vi börja med en enda process?', 'Ja. Det är det tänkta sättet. Välj det arbetsflöde som skapar mest manuellt arbete och börja där.'],
+          ['Kan flera personer använda samma app?', 'Ja. Olika personer kan ha olika roller — till exempel fylla i, godkänna eller exportera.'],
+          ['Vad händer med vår befintliga Excel-fil?', 'Ni laddar upp den så att Flowly kan läsa kolumner och struktur. Filen blir utgångspunkten för formulär och arbetsflöde, inte något ni måste slänga.'],
+          ['Kan vi exportera data tillbaka till Excel?', 'Ja. I MVP:n kan godkända underlag exporteras tillbaka till Excel när ni behöver arbeta vidare i filen eller skicka den vidare.'],
+        ].map(([q, a], i) => `<details ${i === 0 ? 'open' : ''}><summary>${q}<span>+</span></summary><p>${a}</p></details>`).join('')}
+      </div>
     </div>
   </section>
 `
 
 const cta = () => `
   <section class="final-cta" id="cta">
-    <div class="cta-inner reveal">
-      <p class="eyebrow">07</p>
-      <h2>Har ni en Excel-fil som borde vara en app?</h2>
-      <p>Börja med filen ni redan använder. Se hur mycket enklare arbetsflödet kan bli.</p>
-      <div class="hero-actions">
-        <a class="button button-light" href="#upload">Testa Flowly gratis ${icon('arrow', 16)}</a>
-        <a class="text-link light-link" href="#produkt">Se exempel <span>${icon('arrow', 16)}</span></a>
+    <div class="lp-wrap cta-inner reveal">
+      <div class="lp-cta-copy">
+        <p class="lp-kicker">Nästa steg</p>
+        <h2>Har ni en Excel-fil som borde vara en app?</h2>
+        <p>Ladda upp den och börja bygga ert arbetsflöde med Flowly.</p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="#cta">Kom igång gratis ${icon('arrow', 16)}</a>
+          <a class="button button-ghost lp-ghost-light" href="#/sa-fungerar-det">Se hur det fungerar</a>
+        </div>
       </div>
-      <small class="cta-note">Ingen kod. Ingen lång implementation.</small>
+      <div class="lp-cta-visual">${dashMock()}</div>
     </div>
   </section>
 `
 
+const pageHead = (kicker: string, title: string, lead: string) => `
+  <section class="lp-pagehead">
+    <div class="lp-wrap">
+      <p class="lp-kicker">${kicker}</p>
+      <h1>${title}</h1>
+      <p class="lp-lead">${lead}</p>
+    </div>
+  </section>
+`
+
+const homeMain = () => `${hero()}${liveDemoShell()}${valueStrip()}${chaos()}${transform()}${dashboard()}${useCases()}${integration()}${cta()}`
+const howMain = () => `${pageHead('Så fungerar det', 'Från Excel-fil till arbetsapp.', 'Tre steg. Ett arbetsflöde som teamet faktiskt kan använda.')}${steps()}${cta()}`
+const pricingMain = () => `${pageHead('Priser', 'Växla upp när ni är redo.', 'Börja litet. Bygg vidare när processen växer.')}${pricing()}${cta()}`
+const faqMain = () => `${pageHead('FAQ', 'Det ni undrar innan ni börjar.', 'Korta svar på de vanligaste frågorna om Flowly.')}${faq()}${cta()}`
+
+const marketingMain = () => {
+  const route = parseRoute()
+  if (route.name === 'how') return howMain()
+  if (route.name === 'pricing') return pricingMain()
+  if (route.name === 'faq') return faqMain()
+  return homeMain()
+}
+
 const footer = () => `
   <footer class="site-footer">
     <div class="footer-top">
-      <a class="brand" href="#top"><span class="brand-mark">f</span>flowly</a>
-      <p>Ni har redan processen.<br /><strong>Slipp bara Excel-kaoset.</strong></p>
-      <div class="footer-links">
-        <div><small>Utforska</small><a href="#produkt">Produkt</a><a href="#process">Så fungerar det</a><a href="#exempel">Exempel</a></div>
-        <div><small>Företag</small><a href="#priser">Priser</a><a href="#faq">Kontakt</a><a href="#faq">Integritet</a></div>
-      </div>
+      <a class="brand" href="#/">${flowMark()}<span class="brand-word">Flowly</span></a>
+      <nav class="footer-links" aria-label="Sidfot">
+        <a href="#/">Produkt</a>
+        <a href="#/sa-fungerar-det">Så fungerar det</a>
+        <a href="#/anvandning">Användningsområden</a>
+        <a href="#/priser">Priser</a>
+        <a href="#/faq">FAQ</a>
+        <a href="#login">Logga in</a>
+        <a href="#cta">Kom igång</a>
+      </nav>
     </div>
     <div class="footer-bottom">
       <span>© 2026 Flowly</span>
-      <span>Gjord för bättre arbetsdagar i Sverige</span>
-      <span>Villkor</span>
+      <span>Från Excel till arbetsapp</span>
     </div>
   </footer>
 `
 
 const app = document.querySelector<HTMLDivElement>('#app')!
-app.innerHTML = `${header()}<main>${hero()}${chaos()}${transform()}${steps()}${dashboard()}${useCases()}${integration()}${pricing()}${roles()}${faq()}${cta()}</main>${footer()}`
+app.innerHTML = `${header()}${pageAtmosphere()}<main>${marketingMain()}</main>${footer()}`
 app.insertAdjacentHTML('beforeend', authModal())
 
 const authOverlay = () => document.querySelector<HTMLElement>('#auth-overlay')
 let bindMarketingPage = () => {}
 
+const headerOffset = () => (document.querySelector<HTMLElement>('.site-header')?.offsetHeight ?? 72) + 16
+
+const scrollMarketing = (focus?: string) => {
+  const top = (() => {
+    if (!focus) return 0
+    const el = document.getElementById(focus)
+    if (!el) return 0
+    return Math.max(0, el.getBoundingClientRect().top + window.scrollY - headerOffset())
+  })()
+  window.scrollTo({ top, behavior: 'instant' })
+}
+
 const renderLanding = () => {
   document.body.classList.remove('is-product-mode')
-  app.innerHTML = `${header()}<main>${hero()}${chaos()}${transform()}${steps()}${dashboard()}${useCases()}${integration()}${pricing()}${roles()}${faq()}${cta()}</main>${footer()}`
+  app.innerHTML = `${header()}${pageAtmosphere()}<main>${marketingMain()}</main>${footer()}`
   app.insertAdjacentHTML('beforeend', authModal())
   bindMarketingPage()
+  const route = parseRoute()
+  document.title = pageTitle(route)
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    scrollMarketing(route.name === 'home' ? route.focus : undefined)
+  }))
 }
 
 const renderProduct = () => {
@@ -1328,6 +1575,10 @@ const applyAuthenticatedRoute = () => {
   loadUserApps()
 
   const route = parseRoute()
+  if (isMarketingPage(route) || (route.name === 'home' && route.focus)) {
+    renderLanding()
+    return
+  }
   if (route.name === 'new') {
     if (productState.screen !== 'onboarding') {
       resetWorkspaceHomeState()
@@ -1388,16 +1639,59 @@ const exportReports = () => {
   XLSX.writeFile(book, `${(productState.topic || 'flowly-workflow').toLocaleLowerCase('sv-SE').replace(/\s+/g, '-')}.xlsx`)
 }
 
+let liveDemoView: DemoView = 'overview'
+let liveDemoSelected = 'erik'
+const paintLiveDemo = () => {
+  const liveDemoRoot = document.querySelector<HTMLElement>('#live-demo')
+  if (!liveDemoRoot) return
+  liveDemoRoot.dataset.demoView = liveDemoView
+  liveDemoRoot.innerHTML = renderLiveDemoView(liveDemoView, liveDemoSelected)
+}
+const showDemoLock = (action: string) => {
+  const messages: Record<string, string> = {
+    add: 'Detta är en demo. Ni kan inte lägga till rapporter här.',
+    approve: 'Detta är en demo. Godkännanden sparas inte.',
+    invite: 'Detta är en demo. Ni kan inte bjuda in användare här.',
+    edit: 'Detta är en demo. Fälten är skrivskyddade.',
+  }
+  document.querySelector('.lp-demo-toast')?.remove()
+  const toast = document.createElement('div')
+  toast.className = 'lp-demo-toast'
+  toast.setAttribute('role', 'status')
+  toast.textContent = messages[action] || 'Detta är en demo. Inget sparas.'
+  document.body.append(toast)
+  window.setTimeout(() => toast.remove(), 3200)
+}
+
 document.addEventListener('click', (event) => {
   const target = event.target as HTMLElement
-  const cta = target.closest<HTMLAnchorElement>('a[href="#cta"], a[href="#faq"]')
+  const cta = target.closest<HTMLAnchorElement>('a[href="#cta"], a[href="#login"]')
   if (cta) {
     event.preventDefault()
-    openAuth(cta.getAttribute('href') === '#faq' ? 'login' : 'signup')
+    openAuth(cta.getAttribute('href') === '#login' ? 'login' : 'signup')
   }
   if (target.closest('.auth-close')) closeAuth()
   const authTab = target.closest<HTMLButtonElement>('[data-auth-mode]')
   if (authTab) openAuth((authTab.dataset.authMode as 'signup' | 'login') || 'signup')
+  if (!target.closest('#live-demo')) return
+  const viewBtn = target.closest<HTMLButtonElement>('[data-demo-view]')
+  if (viewBtn?.dataset.demoView) {
+    liveDemoView = viewBtn.dataset.demoView as DemoView
+    paintLiveDemo()
+    return
+  }
+  const openBtn = target.closest<HTMLButtonElement>('[data-demo-open]')
+  if (openBtn?.dataset.demoOpen) {
+    liveDemoSelected = openBtn.dataset.demoOpen
+    if (liveDemoView === 'overview') liveDemoView = 'inbox'
+    paintLiveDemo()
+    return
+  }
+  const locked = target.closest<HTMLButtonElement>('[data-demo-locked]')
+  if (locked) {
+    event.preventDefault()
+    showDemoLock(locked.dataset.demoLocked || 'edit')
+  }
 })
 
 document.addEventListener('submit', async (event) => {
@@ -1612,51 +1906,15 @@ if (chaosStage) {
 }
 
 const headerEl = document.querySelector('.site-header')
-const onScroll = () => headerEl?.classList.toggle('is-scrolled', window.scrollY > 8)
+const heroEl = document.querySelector<HTMLElement>('.hero')
+const onScroll = () => {
+  const pastHero = (heroEl?.getBoundingClientRect().bottom ?? 80) < 80
+  headerEl?.classList.toggle('is-scrolled', pastHero)
+}
 onScroll()
 window.addEventListener('scroll', onScroll, { passive: true })
 
-const demo = document.querySelector<HTMLElement>('.hero-demo')
-const stageButtons = document.querySelectorAll<HTMLButtonElement>('.stage-tabs button')
-const panels = document.querySelectorAll<HTMLElement>('.stage-panel')
-const stages = ['excel', 'flowly', 'app'] as const
-let demoPaused = false
-
-const excelStatus = document.querySelector('[data-excel-status]')
-const setStage = (stage: string) => {
-  if (!demo) return
-  demo.dataset.stage = stage
-  stageButtons.forEach((btn) => btn.classList.toggle('is-active', btn.dataset.panel === stage))
-  if (excelStatus) {
-    excelStatus.textContent = stage === 'excel' ? 'Analyserar fil…' : 'Redo att importera'
-  }
-}
-
-stageButtons.forEach((btn) => {
-  btn.addEventListener('click', () => {
-    demoPaused = true
-    setStage(btn.dataset.panel ?? 'excel')
-  })
-})
-
-panels.forEach((panel) => {
-  panel.addEventListener('mouseenter', () => {
-    demoPaused = true
-    setStage(panel.dataset.panel ?? 'excel')
-  })
-  panel.addEventListener('mouseleave', () => {
-    demoPaused = false
-  })
-})
-
-if (!reduceMotion && demo) {
-  let index = 0
-  window.setInterval(() => {
-    if (demoPaused) return
-    index = (index + 1) % stages.length
-    setStage(stages[index])
-  }, 3800)
-}
+paintLiveDemo()
 
 const uploadZone = document.querySelector<HTMLLabelElement>('.upload-zone')
 const uploadInput = document.querySelector<HTMLInputElement>('#file-upload')
@@ -1810,47 +2068,76 @@ mobileMenu?.querySelectorAll('a').forEach((link) => {
 })
 
 const navTargets: Array<[string, string]> = [
-  ['produkt', 'produkt'],
-  ['process', 'process'],
-  ['exempel', 'exempel'],
-  ['product-demo', 'produkt'],
-  ['priser', 'priser'],
+  ['top', '#/'],
+  ['produkt', '#/'],
+  ['anvandning', '#/anvandning'],
 ]
-const navLinks = document.querySelectorAll('.desktop-nav a')
-const navObserver = new IntersectionObserver(
-  (entries) => {
-    entries.forEach((entry) => {
-      if (!entry.isIntersecting) return
-      const match = navTargets.find(([id]) => id === entry.target.id)
-      if (!match) return
-      navLinks.forEach((link) => {
-        link.classList.toggle('is-active', link.getAttribute('href') === `#${match[1]}`)
+const navLinks = document.querySelectorAll('.desktop-nav a, .mobile-menu a')
+if (parseRoute().name === 'home') {
+  const navObserver = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return
+        const match = navTargets.find(([id]) => id === entry.target.id)
+        if (!match) return
+        navLinks.forEach((link) => {
+          const href = link.getAttribute('href')
+          if (href === '#cta' || href === '#login') return
+          link.classList.toggle('is-active', href === match[1])
+        })
       })
-    })
-  },
-  { rootMargin: '-42% 0px -48% 0px', threshold: 0 },
-)
-navTargets.forEach(([id]) => {
-  const section = document.getElementById(id)
-  if (section) navObserver.observe(section)
-})
+    },
+    { rootMargin: '-42% 0px -48% 0px', threshold: 0 },
+  )
+  navTargets.forEach(([id]) => {
+    const section = document.getElementById(id)
+    if (section) navObserver.observe(section)
+  })
+}
 }
 
 const initializeFlowly = () => {
   productState.authReady = true
   const currentUser = currentUserProfile()
+  const route = parseRoute()
   if (!currentUser) {
-    if (parseRoute().name !== 'marketing') history.replaceState(null, '', location.pathname + location.search)
-    if (!document.querySelector('.hero') || document.querySelector('.product-shell, .onboarding-shell')) renderLanding()
-    else bindMarketingPage()
+    if (isProductRoute(route)) history.replaceState(null, '', location.pathname + location.search)
+    renderLanding()
     return
   }
   applyAuthenticatedRoute()
 }
 
+const syncHomeFocus = (route: AppRoute) => {
+  document.title = pageTitle(route)
+  document.querySelectorAll('.desktop-nav a, .mobile-menu a').forEach((link) => {
+    const href = link.getAttribute('href')
+    if (href === '#cta' || href === '#login') return
+    link.classList.toggle('is-active', href === currentNavHref())
+  })
+  scrollMarketing(route.focus)
+}
+
 window.addEventListener('hashchange', () => {
-  if (!getCurrentUser()) return
-  applyAuthenticatedRoute()
+  if (isOverlayHash()) return
+  const route = parseRoute()
+  if (isProductRoute(route)) {
+    if (getCurrentUser()) applyAuthenticatedRoute()
+    else {
+      history.replaceState(null, '', location.pathname + location.search)
+      renderLanding()
+    }
+    return
+  }
+  if (getCurrentUser() && route.name === 'home' && !route.focus) {
+    applyAuthenticatedRoute()
+    return
+  }
+  if (route.name === 'home' && document.querySelector('.hero') && !document.body.classList.contains('is-product-mode')) {
+    syncHomeFocus(route)
+    return
+  }
+  renderLanding()
 })
 
 initializeFlowly()
