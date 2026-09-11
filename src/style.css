@@ -2095,3 +2095,27 @@ body.is-product-mode .auth-form input { background: #fff; border-color: var(--li
 .skeleton-card i:nth-child(2) { width: 62%; height: 18px; margin-top: 18px; }
 .skeleton-card i:last-child { width: 84%; }
 @keyframes skeleton-shimmer { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
+
+.explanation-label { display: grid; gap: 8px; margin-top: 22px; color: var(--ink); font-size: 13px; font-weight: 600; }
+.explanation-label .custom-topic { min-height: 120px; font-weight: 400; }
+.onboarding-panel .form-error { margin-top: 12px; color: var(--stop); font-size: 13px; }
+.product-analysis-steps { margin-top: 28px; }
+.analysis-summary { margin-top: 28px; padding: 24px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fff; }
+.analysis-summary h2 { margin: 4px 0 12px; font-size: 28px; }
+.summary-fields { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0; }
+.summary-fields span { display: inline-flex; flex-direction: column; gap: 2px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); font-size: 13px; font-weight: 600; }
+.summary-fields small { color: var(--ink-3); font-size: 10px; font-weight: 500; text-transform: uppercase; }
+.summary-actions ul { margin: 8px 0 0; padding-left: 18px; color: var(--ink-2); }
+.sheet-note { margin-top: 10px; color: var(--ink-3); font-size: 13px; }
+.understood-banner { display: grid; gap: 4px; margin-bottom: 18px; padding: 16px 18px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--pine-soft); color: var(--pine); }
+.understood-banner span { color: var(--ink-2); font-size: 13px; }
+.records-toolbar { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+.records-search, .records-toolbar select { flex: 1; min-width: 180px; padding: 11px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; }
+.records-table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fff; }
+.records-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.records-table th, .records-table td { padding: 11px 14px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+.records-table th { color: var(--ink-3); font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; background: var(--bg); }
+.record-row-actions { display: flex; gap: 10px; }
+.record-form { display: grid; gap: 14px; margin-top: 8px; }
+.record-form-actions { display: flex; gap: 10px; margin-top: 8px; }
+.record-editor-card { max-width: 640px; }
