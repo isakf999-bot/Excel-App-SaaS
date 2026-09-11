@@ -1,6 +1,9 @@
 import './style.css'
 import './landing.css'
 import * as XLSX from 'xlsx'
+import { excelErrorCopy, parseWorkbook, type WorkbookAnalysis } from './excel'
+import { generateAppSpec, specToWorkflowFields, type AppSpec } from './architect'
+import { filterRecords, metricValue, recordTitle, recordsFromAnalysis, type AppRecord } from './records'
 
 type IconName =
   | 'arrow'
@@ -489,15 +492,7 @@ const transform = () => `
   </section>
 `
 
-type ExcelAnalysis = {
-  fileName: string
-  sheetNames: string[]
-  columns: string[]
-  rows: string[][]
-  rowCount: number
-  formFields: string[]
-  statusFields: string[]
-}
+type ExcelAnalysis = WorkbookAnalysis
 
 const escapeHtml = (value: unknown) => String(value ?? '')
   .replace(/&/g, '&amp;')
@@ -511,32 +506,7 @@ const matchesColumn = (column: string, terms: string[]) => {
   return terms.some((term) => normalized.includes(term))
 }
 
-const analyzeExcelFile = async (file: File): Promise<ExcelAnalysis> => {
-  const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true })
-  const sheetNames = workbook.SheetNames
-  const firstSheet = sheetNames[0] ? workbook.Sheets[sheetNames[0]] : undefined
-  const matrix = firstSheet
-    ? XLSX.utils.sheet_to_json<unknown[]>(firstSheet, { header: 1, defval: '' })
-    : []
-  const nonEmptyRows = matrix.filter((row) => row.some((cell) => String(cell ?? '').trim() !== ''))
-  const columns = (nonEmptyRows[0] ?? []).map((column, index) => String(column || `Kolumn ${index + 1}`).trim())
-  const dataRows = nonEmptyRows.slice(1).map((row) => columns.map((_, index) => String(row[index] ?? '').trim()))
-
-  if (!columns.length || !dataRows.length) throw new Error('EMPTY_WORKBOOK')
-
-  const formFields = columns.filter((column) => !matchesColumn(column, ['godkänd', 'godkand', 'status', 'approved']))
-  const statusFields = columns.filter((column) => matchesColumn(column, ['godkänd', 'godkand', 'status', 'approved']))
-
-  return {
-    fileName: file.name,
-    sheetNames,
-    columns,
-    rows: dataRows.slice(0, 8),
-    rowCount: dataRows.length,
-    formFields: formFields.length ? formFields.slice(0, 5) : columns.slice(0, 5),
-    statusFields,
-  }
-}
+const analyzeExcelFile = async (file: File): Promise<ExcelAnalysis> => parseWorkbook(file)
 
 const uploadResult = () => '<div class="upload-result" id="upload-result" aria-live="polite" hidden></div>'
 
@@ -611,6 +581,8 @@ type FlowlyApp = {
     published: boolean
     saved: boolean
     analysis?: ExcelAnalysis
+    spec?: AppSpec
+    records: AppRecord[]
     reports: Report[]
     builderTab: 'form' | 'workflow' | 'approvals' | 'team'
   }
@@ -625,9 +597,12 @@ type ProductState = {
   screen: 'onboarding' | 'projects' | 'dashboard' | 'workflows' | 'builder' | 'use' | 'approvals' | 'team' | 'settings'
   builderTab: 'form' | 'workflow' | 'approvals' | 'team'
   onboardingStep: 1 | 2 | 3 | 4
+  onboardingError: string
+  analysisProgress: string[]
   topic: string
   customTopic: string
   analysis?: ExcelAnalysis
+  spec?: AppSpec
   fields: WorkflowField[]
   selectedField: number
   approver: string
@@ -635,6 +610,10 @@ type ProductState = {
   saved: boolean
   published: boolean
   reports: Report[]
+  records: AppRecord[]
+  recordQuery: string
+  recordFilter: string
+  editingRecordId: string | null
   currentAppId: string | null
   userName: string
   workspaceName: string
@@ -646,20 +625,53 @@ const FLOWLY_STORE_KEY = 'flowly-store-v1'
 
 const emptyStore = (): FlowlyStore => ({ users: [], workspaces: [], apps: [], session: { userId: null } })
 
+const legacyRecords = (app: FlowlyApp): AppRecord[] => {
+  if (Array.isArray(app.config?.records) && app.config.records.length) return app.config.records
+  const fromReports = Array.isArray(app.config?.reports)
+    ? app.config.reports.map((report) => ({
+      id: String(report.id),
+      values: { ...report.values, ...(report.status ? { Status: report.status } : {}) },
+      createdAt: app.createdAt,
+      updatedAt: app.updatedAt,
+      source: 'user' as const,
+    }))
+    : []
+  if (fromReports.length) return fromReports
+  const analysis = app.config?.analysis
+  if (!analysis?.columns?.length || !analysis.rows?.length) return []
+  const now = app.createdAt || new Date().toISOString()
+  return analysis.rows.map((row, index) => ({
+    id: `${app.id}-row-${index}`,
+    values: Object.fromEntries(analysis.columns.map((column, columnIndex) => [column, row[columnIndex] ?? ''])),
+    createdAt: now,
+    updatedAt: now,
+    source: 'excel' as const,
+  }))
+}
+
 const migrateApp = (app: FlowlyApp, workspaces: FlowlyWorkspace[]): FlowlyApp => {
   const workspace = workspaces.find((entry) => entry.id === app.workspaceId)
+  const records = legacyRecords(app)
+  const analysis = app.config?.analysis
+  const customTopic = app.config?.customTopic || app.description || ''
+  const topic = app.config?.topic || app.name
+  const spec = app.config?.spec || (analysis ? generateAppSpec({ useCase: topic, explanation: customTopic, analysis }) : undefined)
   return {
     ...app,
     ownerId: app.ownerId || workspace?.ownerId || '',
     config: {
-      topic: app.config?.topic || app.name,
-      customTopic: app.config?.customTopic || '',
-      fields: Array.isArray(app.config?.fields) ? app.config.fields : [],
+      topic,
+      customTopic,
+      fields: Array.isArray(app.config?.fields) && app.config.fields.length
+        ? app.config.fields
+        : spec ? specToWorkflowFields(spec) : [],
       approver: app.config?.approver || 'Chef',
       afterApproval: app.config?.afterApproval || 'Markera som klar',
       published: Boolean(app.config?.published),
       saved: Boolean(app.config?.saved),
-      analysis: app.config?.analysis,
+      analysis,
+      spec,
+      records,
       reports: Array.isArray(app.config?.reports) ? app.config.reports : [],
       builderTab: app.config?.builderTab || 'form',
     },
@@ -767,6 +779,8 @@ const resetWorkspaceHomeState = () => {
   productState.currentAppId = null
   productState.topic = ''
   productState.customTopic = ''
+  productState.onboardingError = ''
+  productState.analysisProgress = []
   productState.fields = []
   productState.selectedField = 0
   productState.approver = 'Chef'
@@ -774,7 +788,12 @@ const resetWorkspaceHomeState = () => {
   productState.saved = false
   productState.published = false
   productState.analysis = undefined
+  productState.spec = undefined
   productState.reports = []
+  productState.records = []
+  productState.recordQuery = ''
+  productState.recordFilter = ''
+  productState.editingRecordId = null
   productState.builderTab = 'form'
   productState.onboardingStep = 1
 }
@@ -793,15 +812,22 @@ const loadAppIntoState = (app: FlowlyApp | null) => {
   productState.saved = app.config.saved
   productState.published = app.config.published
   productState.analysis = app.config.analysis
+  productState.spec = app.config.spec
   productState.reports = app.config.reports || []
+  productState.records = app.config.records || []
+  productState.recordQuery = ''
+  productState.recordFilter = ''
+  productState.editingRecordId = null
   productState.builderTab = app.config.builderTab || 'form'
   productState.userName = getCurrentUser()?.name || productState.userName
   productState.workspaceName = getCurrentWorkspace()?.name || productState.workspaceName
 }
 
 const productState: ProductState = {
-  screen: 'projects', builderTab: 'form', onboardingStep: 1, topic: '', customTopic: '', fields: [], selectedField: 0,
-  approver: 'Chef', afterApproval: 'Markera som klar', saved: false, published: false, reports: [], currentAppId: null,
+  screen: 'projects', builderTab: 'form', onboardingStep: 1, onboardingError: '', analysisProgress: [],
+  topic: '', customTopic: '', fields: [], selectedField: 0,
+  approver: 'Chef', afterApproval: 'Markera som klar', saved: false, published: false, reports: [], records: [],
+  recordQuery: '', recordFilter: '', editingRecordId: null, currentAppId: null,
   userName: 'Flowly användare', workspaceName: 'Flowly workspace', authReady: false, appsStatus: 'idle',
 }
 
@@ -820,7 +846,7 @@ const saveCurrentWorkflow = () => {
     id: appId,
     ownerId: user.id,
     workspaceId: workspace.id,
-    name: productState.topic || existing?.name || 'Nytt arbetsflöde',
+    name: productState.spec?.name || productState.topic || existing?.name || 'Nytt arbetsflöde',
     description: productState.customTopic || existing?.description || `Arbetsflöde byggt från ${productState.analysis?.fileName || 'Excel'}`,
     createdAt: existing?.createdAt ?? new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -835,6 +861,8 @@ const saveCurrentWorkflow = () => {
       published: productState.published,
       saved: true,
       analysis: productState.analysis,
+      spec: productState.spec,
+      records: productState.records,
       reports: productState.reports,
       builderTab: productState.builderTab,
     },
@@ -894,14 +922,24 @@ const authModal = () => `
   </div>
 `
 
-const onboardingSteps = () => `<div class="product-stepper">${[['01', 'Konto'], ['02', 'Arbetsflöde'], ['03', 'Excel'], ['04', 'Konfigurera']].map(([number, label], index) => `<span class="${index + 1 <= productState.onboardingStep ? 'is-active' : ''}"><b>${number}</b>${label}</span>`).join('')}</div>`
+const onboardingSteps = () => `<div class="product-stepper">${[['01', 'Användning'], ['02', 'Excel'], ['03', 'Analys'], ['04', 'Skapa app']].map(([number, label], index) => `<span class="${index + 1 <= productState.onboardingStep ? 'is-active' : ''}"><b>${number}</b>${label}</span>`).join('')}</div>`
 
 const productSidebar = () => {
   const currentUser = currentUserProfile()
   const workspace = currentWorkspaceProfile()
   const initials = currentUser?.name?.split(' ')?.slice(0, 2).map((segment) => segment[0]?.toUpperCase() ?? '').join('') || 'FU'
   const inApp = Boolean(productState.currentAppId) && productState.screen !== 'projects'
-  const appNav = [['dashboard', 'chart', 'Översikt'], ['builder', 'clipboard', 'Formulär'], ['workflows', 'workflow', 'Arbetsflöde'], ['approvals', 'check', 'Godkännanden'], ['team', 'users', 'Team']] as const
+  const spec = productState.spec
+  const waiting = spec?.statusField
+    ? productState.records.filter((record) => /väntar|vant|öppen|oppen|pågående|pagaende|ny|planerad/i.test(record.values[spec.statusField!] || '')).length
+    : 0
+  const appNav: Array<[ProductState['screen'], IconName, string]> = [
+    ['dashboard', 'chart', 'Översikt'],
+    ['use', 'clipboard', spec ? spec.entityNamePlural[0].toUpperCase() + spec.entityNamePlural.slice(1) : 'Poster'],
+    ['builder', 'settings', 'Fält'],
+    ['team', 'users', 'Team'],
+  ]
+  if (spec?.features.includes('approvals')) appNav.splice(3, 0, ['approvals', 'check', 'Godkännanden'])
   return `
     <aside class="product-sidebar">
       <a class="product-brand" href="#/apps" data-product-action="back-to-apps">${flowMark()}<strong>Flowly</strong></a>
@@ -909,7 +947,7 @@ const productSidebar = () => {
       <nav class="product-nav">
         <p>Workspace</p>
         <button type="button" data-product-action="back-to-apps" class="${productState.screen === 'projects' ? 'is-active' : ''}">${icon('layers', 16)}Mina appar</button>
-        ${inApp ? `<p class="nav-spacer">App</p>${appNav.map(([screen, ic, label]) => `<button type="button" data-product-screen="${screen}" class="${productState.screen === screen ? 'is-active' : ''}">${icon(ic, 16)}${label}${screen === 'approvals' && productState.reports.filter((report) => report.status === 'Väntar').length ? `<b>${productState.reports.filter((report) => report.status === 'Väntar').length}</b>` : ''}</button>`).join('')}` : ''}
+        ${inApp ? `<p class="nav-spacer">App</p>${appNav.map(([screen, ic, label]) => `<button type="button" data-product-screen="${screen}" class="${productState.screen === screen ? 'is-active' : ''}">${icon(ic, 16)}${label}${screen === 'approvals' && waiting ? `<b>${waiting}</b>` : ''}</button>`).join('')}` : ''}
         <p class="nav-spacer">Konto</p>
         <button type="button" data-product-screen="settings" class="${productState.screen === 'settings' ? 'is-active' : ''}">${icon('settings', 16)}Inställningar</button>
       </nav>
@@ -927,10 +965,76 @@ const workflowFieldsFromAnalysis = (analysis: ExcelAnalysis): WorkflowField[] =>
   value: '',
 }))
 
+const analysisStageList = [
+  ['file', 'Läser Excel-filen'],
+  ['columns', 'Identifierar kolumner'],
+  ['types', 'Förstår datatyper'],
+  ['explanation', 'Läser din beskrivning'],
+  ['workflow', 'Identifierar arbetsflödet'],
+  ['ready', 'Förbereder din app'],
+] as const
+
 const onboardingView = () => {
-  if (productState.onboardingStep === 1) return `<div class="onboarding-panel"><div class="onboarding-copy"><p class="product-kicker">Steg 02 · Arbetsflöde</p><h1>Välkommen till Flowly</h1><p>Låt oss bygga ert första arbetsflöde. Vad vill ni göra enklare?</p></div><div class="topic-grid">${['Tidrapportering', 'Beställningar', 'Kvalitetskontroller', 'Avvikelsehantering', 'Projektuppföljning', 'Annat'].map((topic) => `<button type="button" class="topic-card ${productState.topic === topic ? 'is-selected' : ''}" data-topic="${topic}"><span>${icon(topic === 'Tidrapportering' ? 'clock' : topic === 'Beställningar' ? 'box' : topic === 'Projektuppföljning' ? 'chart' : 'clipboard', 18)}</span><strong>${topic}</strong><small>${topic === 'Annat' ? 'Beskriv själv' : 'Bygg från en befintlig process'}</small></button>`).join('')}</div>${productState.topic === 'Annat' ? '<textarea class="custom-topic" placeholder="Beskriv ert arbetsflöde…"></textarea>' : ''}<button type="button" class="button button-primary onboarding-next" ${productState.topic ? '' : 'disabled'}>Fortsätt till Excel ${icon('arrow', 15)}</button></div>`
-  if (productState.onboardingStep === 2) return `<div class="onboarding-panel"><div class="onboarding-copy"><p class="product-kicker">Steg 03 · Excel</p><h1>Börja med er Excel-fil</h1><p>Ladda upp filen ni redan använder. Flowly använder den som utgångspunkt för att bygga ert arbetsflöde.</p></div><label class="product-upload-zone" for="product-file-upload"><input id="product-file-upload" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" /><span class="upload-symbol">${icon('upload', 25)}</span><strong>Släpp din Excel-fil här</strong><small>eller välj fil från datorn</small><em>.xlsx / .xls</em></label><div class="product-upload-result" aria-live="polite"></div><button type="button" class="text-link onboarding-back" data-product-action="back-onboarding">Tillbaka</button></div>`
-  return `<div class="onboarding-panel onboarding-finished"><div class="onboarding-copy"><p class="product-kicker">Steg 04 · Konfigurera</p><h1>Analysen är klar.</h1><p>Flowly har skapat ett första utkast. Nu kan ni kontrollera fälten och göra arbetsflödet till ert.</p></div><div class="onboarding-summary"><span class="summary-icon">${icon('check', 22)}</span><div><strong>${escapeHtml(productState.analysis?.fileName || 'Excel-fil')}</strong><small>${productState.analysis?.columns.length || 0} kolumner · ${productState.analysis?.rowCount || 0} rader identifierade</small></div></div><button type="button" class="button button-primary onboarding-next">Öppna Workflow Builder ${icon('arrow', 15)}</button></div>`
+  const topics = ['Tidrapportering', 'Beställningar', 'Kvalitetskontroller', 'Avvikelsehantering', 'Projektuppföljning', 'Annat']
+  if (productState.onboardingStep === 1) return `
+    <div class="onboarding-panel">
+      <div class="onboarding-copy">
+        <p class="product-kicker">Steg 01 · Användning</p>
+        <h1>Vad använder ni Excel-filen till?</h1>
+        <p>Välj det som ligger närmast. Beskriv sedan processen med egna ord — det styr hur Flowly bygger appen.</p>
+      </div>
+      <div class="topic-grid">${topics.map((topic) => `<button type="button" class="topic-card ${productState.topic === topic ? 'is-selected' : ''}" data-topic="${topic}"><span>${icon(topic === 'Tidrapportering' ? 'clock' : topic === 'Beställningar' ? 'box' : topic === 'Projektuppföljning' ? 'chart' : topic === 'Kvalitetskontroller' ? 'shield' : 'clipboard', 18)}</span><strong>${topic}</strong><small>${topic === 'Annat' ? 'Beskriv själv' : 'Bygg från en befintlig process'}</small></button>`).join('')}</div>
+      <label class="explanation-label">Berätta lite mer<textarea class="custom-topic" placeholder="Till exempel: Vi använder detta för att hålla koll på våra kurser. Vi behöver se kursnamn, lärare, antal elever, startdatum och status.">${escapeHtml(productState.customTopic)}</textarea></label>
+      ${productState.onboardingError ? `<p class="form-error">${escapeHtml(productState.onboardingError)}</p>` : ''}
+      <button type="button" class="button button-primary onboarding-next" ${productState.topic ? '' : 'disabled'}>Fortsätt till Excel ${icon('arrow', 15)}</button>
+    </div>`
+  if (productState.onboardingStep === 2) return `
+    <div class="onboarding-panel">
+      <div class="onboarding-copy">
+        <p class="product-kicker">Steg 02 · Excel</p>
+        <h1>Ladda upp er Excel-fil</h1>
+        <p>Flowly läser kolumner, rader och datatyper lokalt. Själva datan blir posterna i appen.</p>
+      </div>
+      <label class="product-upload-zone" for="product-file-upload"><input id="product-file-upload" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" /><span class="upload-symbol">${icon('upload', 25)}</span><strong>Släpp din Excel-fil här</strong><small>eller välj fil från datorn</small><em>.xlsx / .xls</em></label>
+      <div class="product-upload-result" aria-live="polite"></div>
+      <button type="button" class="text-link onboarding-back" data-product-action="back-onboarding">Tillbaka</button>
+    </div>`
+  if (productState.onboardingStep === 3) return `
+    <div class="onboarding-panel">
+      <div class="onboarding-copy">
+        <p class="product-kicker">Steg 03 · Analys</p>
+        <h1>Analyserar din Excel-fil…</h1>
+        <p>Flowly läser filen och din beskrivning för att ta fram appens struktur.</p>
+      </div>
+      <ol class="analysis-steps product-analysis-steps">
+        ${analysisStageList.map(([id, label]) => {
+          const done = productState.analysisProgress.includes(id)
+          const active = !done && analysisStageList.findIndex((item) => !productState.analysisProgress.includes(item[0])) >= 0 && analysisStageList.find((item) => !productState.analysisProgress.includes(item[0]))?.[0] === id
+          return `<li class="${done ? 'is-done' : active ? 'is-active' : ''}"><span>${done ? '✓' : active ? '→' : '·'}</span> ${label}</li>`
+        }).join('')}
+      </ol>
+    </div>`
+  const spec = productState.spec
+  const analysis = productState.analysis
+  const extraSheets = (analysis?.sheetNames || []).filter((name) => name !== analysis?.primarySheet)
+  return `
+    <div class="onboarding-panel onboarding-finished">
+      <div class="onboarding-copy">
+        <p class="product-kicker">Steg 04 · Skapa app</p>
+        <h1>Flowly har förstått din Excel-fil.</h1>
+        <p>Kontrollera sammanfattningen innan du skapar appen. Den fylls med de riktiga raderna från filen.</p>
+      </div>
+      <div class="analysis-summary">
+        <p class="product-kicker">Vi tror att din app handlar om</p>
+        <h2>${escapeHtml(spec?.understoodAs || productState.topic || 'Ert arbetsflöde')}</h2>
+        <p>Vi hittade <strong>${analysis?.rowCount ?? 0} ${escapeHtml(spec?.entityNamePlural || 'rader')}</strong> i ${escapeHtml(analysis?.fileName || 'Excel-filen')}${analysis?.truncated ? ' (visar de första 5 000)' : ''}.</p>
+        ${extraSheets.length ? `<p class="sheet-note">Fler ark i filen: ${extraSheets.map(escapeHtml).join(', ')}. MVP:n använder <strong>${escapeHtml(analysis?.primarySheet || '')}</strong>.</p>` : ''}
+        <div class="summary-fields">${(spec?.fields || []).map((field) => `<span>${escapeHtml(field.name)}<small>${field.type}</small></span>`).join('')}</div>
+        <div class="summary-actions"><p class="product-kicker">Flowly föreslår</p><ul>${(spec?.suggestedActions || []).map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul></div>
+      </div>
+      <button type="button" class="button button-primary onboarding-next">Skapa app ${icon('arrow', 15)}</button>
+      <button type="button" class="text-link onboarding-back" data-product-action="back-onboarding">Tillbaka till uppladdning</button>
+    </div>`
 }
 
 const fieldPreviewValue = (field: WorkflowField, index: number) => {
@@ -966,7 +1070,7 @@ const appCards = () => {
       <div class="workflow-card-top"><span class="card-icon">${icon(topicIcon(app.config.topic || app.name), 16)}</span><span class="status-pill ${app.status === 'active' ? 'active' : 'draft'}">${app.status === 'active' ? 'Aktiv' : 'Utkast'}</span></div>
       <h3>${escapeHtml(app.name)}</h3>
       <p>${escapeHtml(app.description || 'Byggt från Excel')}</p>
-      <small>Senast ändrad ${formatRelativeDate(app.updatedAt)}${app.sourceFileName ? ` · ${escapeHtml(app.sourceFileName)}` : ''}</small>
+      <small>Senast ändrad ${formatRelativeDate(app.updatedAt)}${app.sourceFileName ? ` · ${escapeHtml(app.sourceFileName)}` : ''} · ${app.config.records?.length ?? 0} poster</small>
       <div class="workflow-card-actions">
         <button type="button" class="button button-primary button-small" data-product-action="open-app" data-app-id="${app.id}">Öppna app ${icon('arrow', 14)}</button>
         <button type="button" class="text-link" data-product-action="delete-app" data-app-id="${app.id}">Ta bort</button>
@@ -994,34 +1098,92 @@ const projectsView = () => {
   return `<div class="product-page"><header class="product-header"><div><p class="product-kicker">Flowly workspace</p><h1>Mina appar</h1><p>${user?.name ? `${escapeHtml(user.name.split(' ')[0])}, hantera dina appar och fortsätt där du slutade.` : 'Hantera dina appar och fortsätt där du slutade.'}</p></div><div class="product-header-actions"><button type="button" class="button button-primary button-small" data-product-action="new-workflow">${icon('plus', 14)} Skapa ny app</button></div></header><div class="product-section-heading"><div><p class="product-kicker">Appar</p><h2>Alla dina appar</h2></div></div>${body}</div>`
 }
 
-const dashboardView = () => `<div class="product-page">${productHeader('Översikt', 'En lugn plats för era arbetsflöden och nästa steg.')}<div class="metric-grid"><div><span class="metric-icon">${icon('workflow', 16)}</span><strong>${getCurrentWorkspaceApps().filter((app) => app.status === 'active').length}</strong><small>Aktiva arbetsflöden</small></div><div><span class="metric-icon amber">${icon('clock', 16)}</span><strong>${productState.reports.filter((report) => report.status === 'Väntar').length}</strong><small>Väntar på godkännande</small></div><div><span class="metric-icon blue">${icon('chart', 16)}</span><strong>${productState.reports.length}</strong><small>Rapporter denna vecka</small></div><div><span class="metric-icon sage">${productState.reports.length ? '92%' : '—'}</span><strong>${productState.reports.length ? '92%' : '—'}</strong><small>Godkända i tid</small></div></div><div class="product-section-heading"><div><p class="product-kicker">Arbetsflöden</p><h2>Det ni arbetar med</h2></div><button type="button" class="button button-primary button-small" data-product-action="new-workflow">${icon('plus', 14)} Skapa arbetsflöde</button></div><div class="workflow-product-grid">${appCards()}</div><div class="product-section-heading"><div><p class="product-kicker">Senaste aktivitet</p><h2>Rapporter</h2></div><button type="button" class="text-link" data-product-screen="approvals">Visa alla ${icon('arrow', 14)}</button></div>${reportsTable()}</div>`
+const appTitle = () => productState.spec?.name || productState.topic || 'Arbetsflöde'
+
+const dashboardView = () => {
+  if (!productState.currentAppId) return projectsView()
+  const spec = productState.spec
+  const records = productState.records
+  const metrics = spec?.metrics?.length
+    ? spec.metrics
+    : [{ id: 'count', label: 'Poster', kind: 'count' as const }]
+  const recent = [...records].slice(-8).reverse()
+  return `<div class="product-page">${productHeader(appTitle(), spec?.description || 'Byggt från er Excel-fil och er beskrivning.')}
+    <div class="understood-banner">
+      <strong>Vi hittade ${records.length} ${escapeHtml(spec?.entityNamePlural || 'rader')} i ${escapeHtml(productState.analysis?.fileName || 'Excel-filen')}.</strong>
+      <span>${escapeHtml(spec?.understoodAs || '')}</span>
+    </div>
+    <div class="metric-grid">${metrics.map((metric) => `<div><span class="metric-icon">${icon('chart', 16)}</span><strong>${escapeHtml(metricValue(metric, records))}</strong><small>${escapeHtml(metric.label)}</small></div>`).join('')}</div>
+    <div class="product-section-heading"><div><p class="product-kicker">Senaste</p><h2>${escapeHtml(spec ? spec.entityNamePlural[0].toUpperCase() + spec.entityNamePlural.slice(1) : 'Poster')}</h2></div><button type="button" class="button button-primary button-small" data-product-screen="use">Visa alla ${icon('arrow', 14)}</button></div>
+    ${recent.length ? `<div class="reports-table"><div class="reports-table-head"><span>${escapeHtml(spec?.entityName || 'Post')}</span><span>${escapeHtml(spec?.statusField || 'Info')}</span><span></span></div>${recent.map((record) => `<div class="reports-table-row"><div><strong>${escapeHtml(recordTitle(record, spec))}</strong><small>${escapeHtml(record.source === 'excel' ? 'Från Excel' : 'Tillagd')}</small></div><span>${escapeHtml(spec?.statusField ? record.values[spec.statusField] || '—' : Object.values(record.values)[1] || '—')}</span><button type="button" class="text-link" data-product-action="edit-record" data-record-id="${record.id}">Öppna ${icon('arrow', 13)}</button></div>`).join('')}</div>` : '<div class="quiet-empty">Inga rader importerades. Ladda upp en Excel-fil med data.</div>'}
+  </div>`
+}
 
 const reportsTable = () => productState.reports.length ? `<div class="reports-table"><div class="reports-table-head"><span>Rapport</span><span>Status</span><span>Åtgärd</span></div>${productState.reports.map((report) => `<div class="reports-table-row"><div><strong>${escapeHtml(report.values.Namn || report.values.Name || 'Rapport')}</strong><small>${escapeHtml(productState.topic || 'Arbetsflöde')} · ${escapeHtml(report.values.Datum || 'Idag')}</small></div><span class="status-pill ${report.status === 'Godkänd' ? 'active' : report.status === 'Avvisad' ? 'rejected' : 'waiting'}">${report.status}</span><button type="button" class="text-link" data-product-screen="approvals">Öppna ${icon('arrow', 13)}</button></div>`).join('')}</div>` : '<div class="quiet-empty">Inga inskickade rapporter ännu.</div>'
 
 const workflowsView = () => `<div class="product-page">${productHeader('Mina arbetsflöden', 'Bygg, publicera och använd era processer på ett ställe.')}<div class="workflow-product-grid">${appCards()}</div></div>`
 
-const useWorkflowView = () => {
-  const fields = productState.fields.filter((field) => field.type !== 'Status')
-  return `<div class="product-page use-page">${productHeader(productState.topic || 'Tidrapportering', 'Fyll i rapporten och skicka den till nästa steg i processen.')}<div class="use-layout"><section class="use-form-card"><div class="use-form-heading"><span class="status-pill active">Aktivt arbetsflöde</span><h2>${escapeHtml(productState.topic || 'Veckans tidrapport')}</h2><p>Alla obligatoriska fält behöver fyllas i.</p></div><form class="workflow-use-form">${fields.map((field, index) => `<label>${escapeHtml(field.name)}${field.type === 'Date' ? `<input name="${escapeHtml(field.name)}" type="date" value="2026-09-09" ${field.required ? 'required' : ''} />` : field.type === 'Number' ? `<input name="${escapeHtml(field.name)}" type="number" placeholder="8" ${field.required ? 'required' : ''} />` : field.name.toLocaleLowerCase('sv-SE').includes('projekt') ? `<select name="${escapeHtml(field.name)}" ${field.required ? 'required' : ''}><option value="">Välj projekt</option><option>Projekt A</option><option>Projekt B</option></select>` : `<input name="${escapeHtml(field.name)}" type="text" placeholder="${index === 0 ? 'Anna Andersson' : 'Fyll i ' + field.name.toLocaleLowerCase('sv-SE')}" ${field.required ? 'required' : ''} />`}</label>`).join('')}<p class="form-error" aria-live="polite"></p><button type="submit" class="button button-primary">Skicka rapport ${icon('arrow', 15)}</button></form></section><aside class="process-rail"><p class="product-kicker">Arbetsflöde</p><h3>Vad händer sedan?</h3>${['Skapa rapport', 'Skickas', 'Chef granskar', 'Godkänd / Avvisad', 'Klar'].map((step, index) => `<div class="process-step ${index === 0 ? 'is-current' : ''}"><b>${String(index + 1).padStart(2, '0')}</b><span>${step}</span></div>`).join('')}</aside></div></div>`
+const fieldInput = (field: { key?: string; name: string; type: string; required: boolean; options?: string[] }, value: string) => {
+  const name = field.key || field.name
+  if (field.type === 'date' || field.type === 'Date') return `<input name="${escapeHtml(name)}" type="date" value="${escapeHtml(value)}" ${field.required ? 'required' : ''} />`
+  if (field.type === 'number' || field.type === 'Number') return `<input name="${escapeHtml(name)}" type="number" step="any" value="${escapeHtml(value)}" ${field.required ? 'required' : ''} />`
+  if ((field.type === 'select' || field.type === 'Status') && field.options?.length) {
+    return `<select name="${escapeHtml(name)}" ${field.required ? 'required' : ''}><option value="">Välj</option>${field.options.map((option) => `<option ${option === value ? 'selected' : ''}>${escapeHtml(option)}</option>`).join('')}</select>`
+  }
+  return `<input name="${escapeHtml(name)}" type="text" value="${escapeHtml(value)}" ${field.required ? 'required' : ''} />`
 }
 
-const approvalRows = () => productState.reports.map((report) => {
-  const actions = report.status === 'Väntar'
-    ? `<button type="button" class="approve-row" data-report-action="approve" data-report-id="${report.id}">Godkänn</button><button type="button" class="reject-row" data-report-action="reject" data-report-id="${report.id}">Avvisa</button>`
-    : '<small>Inga åtgärder</small>'
-  const statusClass = report.status === 'Godkänd' ? 'active' : report.status === 'Avvisad' ? 'rejected' : 'waiting'
-  return `<article class="approval-product-card"><div class="approval-person"><span class="preview-avatar">${escapeHtml((report.values.Namn || 'AA').slice(0, 2).toUpperCase())}</span><div><strong>${escapeHtml(report.values.Namn || 'Rapport')}</strong><small>${escapeHtml(productState.topic || 'Tidrapport')} · ${escapeHtml(report.values.Projekt || 'Projekt A')}</small></div></div><span class="status-pill ${statusClass}">${report.status}</span><div class="approval-actions-product">${actions}</div></article>`
-}).join('')
+const recordEditor = () => {
+  const spec = productState.spec
+  const fields = spec?.fields || productState.fields.map((field) => ({ key: field.name, name: field.name, type: field.type.toLowerCase(), required: field.required, options: undefined as string[] | undefined }))
+  const existing = productState.editingRecordId && productState.editingRecordId !== 'new'
+    ? productState.records.find((record) => record.id === productState.editingRecordId)
+    : undefined
+  const title = productState.editingRecordId === 'new' ? `Ny ${spec?.entityName.toLocaleLowerCase('sv-SE') || 'post'}` : `Redigera ${spec?.entityName.toLocaleLowerCase('sv-SE') || 'post'}`
+  return `<form class="record-form">${fields.map((field) => `<label>${escapeHtml(field.name)}${fieldInput(field, existing?.values[field.key || field.name] || '')}</label>`).join('')}<p class="form-error" aria-live="polite"></p><div class="record-form-actions"><button type="submit" class="button button-primary">Spara ${icon('arrow', 15)}</button><button type="button" class="button button-light" data-product-action="close-record">Avbryt</button></div></form>`
+}
+
+const useWorkflowView = () => {
+  const spec = productState.spec
+  const statusField = spec?.statusField
+  const statusOptions = spec?.fields.find((field) => field.key === statusField)?.options || []
+  const rows = filterRecords(productState.records, productState.recordQuery, statusField, productState.recordFilter || undefined)
+  const columns = (spec?.fields || []).slice(0, 6)
+  if (productState.editingRecordId) {
+    return `<div class="product-page use-page">${productHeader(productState.editingRecordId === 'new' ? `Ny ${spec?.entityName || 'post'}` : 'Redigera', spec?.description || '')}<div class="use-form-card record-editor-card"><div class="use-form-heading"><h2>${productState.editingRecordId === 'new' ? `Ny ${escapeHtml(spec?.entityName.toLocaleLowerCase('sv-SE') || 'post')}` : 'Redigera'}</h2></div>${recordEditor()}</div></div>`
+  }
+  return `<div class="product-page use-page">${productHeader(spec ? spec.entityNamePlural[0].toUpperCase() + spec.entityNamePlural.slice(1) : 'Poster', `Visar ${rows.length} av ${productState.records.length} ${spec?.entityNamePlural || 'rader'} från Excel.`)}
+    <div class="records-toolbar">
+      <input type="search" class="records-search" data-record-query placeholder="Sök…" value="${escapeHtml(productState.recordQuery)}" />
+      ${statusField && statusOptions.length ? `<select data-record-filter><option value="">Alla</option>${statusOptions.map((option) => `<option ${productState.recordFilter === option ? 'selected' : ''}>${escapeHtml(option)}</option>`).join('')}</select>` : ''}
+      <button type="button" class="button button-primary button-small" data-product-action="new-record">${icon('plus', 14)} Ny ${escapeHtml(spec?.entityName.toLocaleLowerCase('sv-SE') || 'post')}</button>
+    </div>
+    ${rows.length ? `<div class="records-table-wrap"><table class="records-table"><thead><tr>${columns.map((field) => `<th>${escapeHtml(field.name)}</th>`).join('')}<th></th></tr></thead><tbody>${rows.map((record) => `<tr>${columns.map((field) => `<td>${escapeHtml(record.values[field.key] || '—')}</td>`).join('')}<td class="record-row-actions"><button type="button" class="text-link" data-product-action="edit-record" data-record-id="${record.id}">Redigera</button><button type="button" class="text-link" data-product-action="delete-record" data-record-id="${record.id}">Ta bort</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="quiet-empty">Inga poster matchar sökningen.</div>'}
+  </div>`
+}
+
+const approvalRows = () => {
+  const spec = productState.spec
+  const statusField = spec?.statusField
+  return productState.records.map((record) => {
+    const status = statusField ? record.values[statusField] || '—' : '—'
+    const waiting = /väntar|vant|öppen|oppen|pågående|pagaende|ny|planerad|granskas/i.test(status)
+    const actions = waiting && statusField
+      ? `<button type="button" class="approve-row" data-record-status="Godkänd" data-record-id="${record.id}">Godkänn</button><button type="button" class="reject-row" data-record-status="Avvisad" data-record-id="${record.id}">Avvisa</button>`
+      : '<small>Inga åtgärder</small>'
+    return `<article class="approval-product-card"><div class="approval-person"><span class="preview-avatar">${escapeHtml(recordTitle(record, spec).slice(0, 2).toUpperCase())}</span><div><strong>${escapeHtml(recordTitle(record, spec))}</strong><small>${escapeHtml(appTitle())}</small></div></div><span class="status-pill ${/godk|klar|avslut/i.test(status) ? 'active' : /avvis|avvik/i.test(status) ? 'rejected' : 'waiting'}">${escapeHtml(status)}</span><div class="approval-actions-product">${actions}</div></article>`
+  }).join('')
+}
 
 const approvalsView = () => {
-  const approverOptions = ['Chef', 'Anna Andersson', 'Erik Johansson', 'Team Lead'].map((name) => `<option ${productState.approver === name ? 'selected' : ''}>${name}</option>`).join('')
-  const empty = '<div class="empty-product-state"><span class="empty-state-icon">✓</span><h3>Inget väntar just nu</h3><p>När teamet skickar in rapporter visas de här.</p></div>'
-  return `<div class="product-page">${productHeader('Godkännanden', 'Granska rapporter som väntar på nästa steg.')}<div class="approval-config"><div><p class="product-kicker">Godkännande</p><h2>Vem godkänner?</h2><select data-approval="approver">${approverOptions}</select></div><div><p class="product-kicker">Efter godkännande</p><h2>Vad händer sedan?</h2><label><input type="radio" name="after-approval" value="Markera som klar" ${productState.afterApproval === 'Markera som klar' ? 'checked' : ''} /> Markera som klar</label><label><input type="radio" name="after-approval" value="Exportera" ${productState.afterApproval === 'Exportera' ? 'checked' : ''} /> Exportera</label><label><input type="radio" name="after-approval" value="Skicka vidare" ${productState.afterApproval === 'Skicka vidare' ? 'checked' : ''} /> Skicka vidare</label></div></div><div class="product-section-heading"><div><p class="product-kicker">Inkorg</p><h2>Rapporter att granska</h2></div><button type="button" class="button button-light button-small" data-product-action="export">Exportera till Excel</button></div><div class="approval-list">${productState.reports.length ? approvalRows() : empty}</div></div>`
+  const spec = productState.spec
+  const empty = '<div class="empty-product-state"><span class="empty-state-icon">✓</span><h3>Inget väntar just nu</h3><p>När statusfältet används visas posterna här.</p></div>'
+  return `<div class="product-page">${productHeader('Godkännanden', spec?.features.includes('approvals') ? 'Granska poster som väntar på nästa steg.' : 'Den här appen använder inte ett godkännandeflöde.')}<div class="product-section-heading"><div><p class="product-kicker">Inkorg</p><h2>${escapeHtml(spec?.entityNamePlural || 'Poster')}</h2></div><button type="button" class="button button-light button-small" data-product-action="export">Exportera till Excel</button></div><div class="approval-list">${productState.records.length ? approvalRows() : empty}</div></div>`
 }
 
-const teamView = () => `<div class="product-page">${productHeader('Team', 'Bestäm vilka som ska kunna använda arbetsflödet.')}<div class="product-section-heading"><div><p class="product-kicker">3 medlemmar</p><h2>Ert team</h2></div><button type="button" class="button button-primary button-small" data-product-action="invite">${icon('plus', 14)} Bjud in medlem</button></div><div class="team-list">${[['Anna Andersson', 'Admin', 'peach'], ['Erik Johansson', 'Manager', 'blue'], ['Sara Nilsson', 'Member', 'sage']].map(([name, role, tone]) => `<div><span>${av(name.split(' ').map((part) => part[0]).join(''), tone)}</span><strong>${name}<small>${role}</small></strong><span class="team-access">Aktiv</span></div>`).join('')}</div></div>`
+const teamView = () => `<div class="product-page">${productHeader('Team', 'Samarbete i appen kommer i nästa steg.')}<div class="empty-product-state"><span class="empty-state-icon">${icon('users', 22)}</span><h3>Kommer snart</h3><p>Team, inbjudningar och roller är inte en del av den här MVP:n. Appen tillhör just nu ditt konto.</p></div></div>`
 
-const settingsView = () => `<div class="product-page">${productHeader('Inställningar', 'Grundläggande inställningar för ert workspace.')}<section class="settings-card"><p class="product-kicker">Workspace</p><h2>Nordmark AB</h2><label>Workspace-namn<input value="Nordmark AB" /></label><label>Standardgodkännare<select><option>Chef</option><option>Team Lead</option></select></label><button type="button" class="button button-dark">Spara inställningar</button></section></div>`
+const settingsView = () => `<div class="product-page">${productHeader('Inställningar', 'Grundläggande inställningar för ert workspace.')}<section class="settings-card"><p class="product-kicker">Workspace</p><h2>${escapeHtml(productState.workspaceName)}</h2><p>Inloggad som ${escapeHtml(productState.userName)}.</p></section></div>`
 
 const productContent = () => {
   if (productState.screen === 'projects') return projectsView()
@@ -1610,33 +1772,53 @@ const enterAuthenticatedWorkspace = () => {
 }
 
 const handleProductFile = async (file: File | undefined) => {
-  const result = document.querySelector<HTMLElement>('.product-upload-result')
-  if (!file || !result) return
-  const extension = file.name.toLocaleLowerCase('sv-SE').split('.').pop()
-  if (extension !== 'xlsx' && extension !== 'xls') {
-    result.innerHTML = renderAnalysisError('Den filtypen stöds inte', 'Ladda upp en .xlsx- eller .xls-fil.')
-    return
-  }
-  result.innerHTML = renderAnalysisLoading(file.name)
+  if (!file) return
+  productState.onboardingStep = 3
+  productState.analysisProgress = []
+  renderProduct()
+  const paint = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
   try {
-    const [analysis] = await Promise.all([analyzeExcelFile(file), new Promise((resolve) => window.setTimeout(resolve, reduceMotion ? 0 : 850))])
+    productState.analysisProgress = ['file']
+    renderProduct()
+    await paint()
+    const analysis = await parseWorkbook(file)
     productState.analysis = analysis
-    productState.fields = workflowFieldsFromAnalysis(analysis)
+    productState.analysisProgress = ['file', 'columns', 'types']
+    renderProduct()
+    await paint()
+    productState.analysisProgress = ['file', 'columns', 'types', 'explanation']
+    renderProduct()
+    await paint()
+    const spec = generateAppSpec({
+      useCase: productState.topic,
+      explanation: productState.customTopic,
+      analysis,
+    })
+    productState.spec = spec
+    productState.fields = specToWorkflowFields(spec)
+    productState.records = recordsFromAnalysis(analysis, makeId)
+    productState.analysisProgress = ['file', 'columns', 'types', 'explanation', 'workflow', 'ready']
+    renderProduct()
+    await paint()
     productState.onboardingStep = 4
-    persistProductState()
+    productState.published = true
     renderProduct()
   } catch (error) {
-    const emptyFile = error instanceof Error && error.message === 'EMPTY_WORKBOOK'
-    result.innerHTML = renderAnalysisError(emptyFile ? 'Vi hittade inga data att analysera.' : 'Vi kunde inte läsa filen', emptyFile ? 'Ladda upp en Excel-fil som innehåller ett arbetsflöde eller en tabell.' : 'Kontrollera att filen är en giltig Excel-fil och försök igen.')
+    const copy = excelErrorCopy(error)
+    productState.onboardingStep = 2
+    renderProduct()
+    const result = document.querySelector<HTMLElement>('.product-upload-result')
+    if (result) result.innerHTML = renderAnalysisError(copy.title, copy.message)
   }
 }
 
 const exportReports = () => {
-  const rows = productState.reports.map((report) => ({ ...report.values, Status: report.status }))
-  const sheet = XLSX.utils.json_to_sheet(rows.length ? rows : [{ Status: 'Inga rapporter ännu' }])
+  const spec = productState.spec
+  const rows = productState.records.map((record) => record.values)
+  const sheet = XLSX.utils.json_to_sheet(rows.length ? rows : [{ Info: 'Inga poster ännu' }])
   const book = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(book, sheet, productState.topic || 'Flowly')
-  XLSX.writeFile(book, `${(productState.topic || 'flowly-workflow').toLocaleLowerCase('sv-SE').replace(/\s+/g, '-')}.xlsx`)
+  XLSX.utils.book_append_sheet(book, sheet, (spec?.entityNamePlural || productState.topic || 'Flowly').slice(0, 31))
+  XLSX.writeFile(book, `${(spec?.name || productState.topic || 'flowly-app').toLocaleLowerCase('sv-SE').replace(/\s+/g, '-')}.xlsx`)
 }
 
 let liveDemoView: DemoView = 'overview'
@@ -1757,6 +1939,21 @@ app.addEventListener('change', (event) => {
   if (target.id === 'product-file-upload' && target instanceof HTMLInputElement) void handleProductFile(target.files?.[0])
   if (target.matches('[data-approval="approver"]')) { productState.approver = target.value; if (productState.currentAppId) saveCurrentWorkflow() }
   if (target.matches('input[name="after-approval"]')) { productState.afterApproval = target.value; if (productState.currentAppId) saveCurrentWorkflow() }
+  if (target.matches('[data-record-filter]')) {
+    productState.recordFilter = target.value
+    renderProduct()
+  }
+})
+
+app.addEventListener('input', (event) => {
+  const target = event.target as HTMLInputElement
+  if (!target.matches('[data-record-query]')) return
+  productState.recordQuery = target.value
+  const start = target.selectionStart
+  renderProduct()
+  const input = document.querySelector<HTMLInputElement>('[data-record-query]')
+  input?.focus()
+  if (typeof start === 'number') input?.setSelectionRange(start, start)
 })
 
 app.addEventListener('dragover', (event) => {
@@ -1774,12 +1971,25 @@ app.addEventListener('drop', (event) => {
 
 app.addEventListener('submit', (event) => {
   const form = event.target as HTMLFormElement
-  if (!form.matches('.workflow-use-form')) return
+  if (!form.matches('.record-form')) return
   event.preventDefault()
-  if (!form.checkValidity()) { form.querySelector<HTMLElement>('.form-error')!.textContent = 'Fyll i alla obligatoriska fält innan rapporten skickas.'; form.reportValidity(); return }
+  if (!form.checkValidity()) {
+    form.querySelector<HTMLElement>('.form-error')!.textContent = 'Fyll i alla obligatoriska fält.'
+    form.reportValidity()
+    return
+  }
   const values = Object.fromEntries(new FormData(form).entries()) as Record<string, string>
-  productState.reports.push({ id: Date.now(), values, status: 'Väntar' })
-  productState.screen = 'approvals'
+  const now = new Date().toISOString()
+  if (productState.editingRecordId && productState.editingRecordId !== 'new') {
+    const record = productState.records.find((item) => item.id === productState.editingRecordId)
+    if (record) {
+      record.values = values
+      record.updatedAt = now
+    }
+  } else {
+    productState.records.push({ id: makeId(), values, createdAt: now, updatedAt: now, source: 'user' })
+  }
+  productState.editingRecordId = null
   saveCurrentWorkflow()
   renderProduct()
 })
@@ -1801,12 +2011,27 @@ app.addEventListener('click', (event) => {
     return
   }
   const topic = target.closest<HTMLElement>('[data-topic]')
-  if (topic) { productState.topic = topic.dataset.topic || ''; renderProduct(); return }
+  if (topic) {
+    productState.customTopic = document.querySelector<HTMLTextAreaElement>('.custom-topic')?.value ?? productState.customTopic
+    productState.topic = topic.dataset.topic || ''
+    productState.onboardingError = ''
+    renderProduct()
+    return
+  }
   if (target.closest('.onboarding-next')) {
-    if (productState.onboardingStep === 1) { productState.customTopic = document.querySelector<HTMLTextAreaElement>('.custom-topic')?.value.trim() || ''; productState.onboardingStep = 2; renderProduct() }
-    else if (productState.onboardingStep === 4) {
+    if (productState.onboardingStep === 1) {
+      productState.customTopic = document.querySelector<HTMLTextAreaElement>('.custom-topic')?.value.trim() || ''
+      if (!productState.customTopic) {
+        productState.onboardingError = 'Berätta kort vad ni använder Excel-filen till. Det styr hur appen byggs.'
+        renderProduct()
+        return
+      }
+      productState.onboardingError = ''
+      productState.onboardingStep = 2
+      renderProduct()
+    } else if (productState.onboardingStep === 4) {
       const created = saveCurrentWorkflow()
-      productState.screen = 'builder'
+      productState.screen = 'dashboard'
       if (created) setAppHash(`/apps/${created.id}`)
       renderProduct()
     }
@@ -1816,7 +2041,11 @@ app.addEventListener('click', (event) => {
   if (field) { productState.selectedField = Number(field.dataset.fieldIndex); renderProduct(); return }
   const builderTab = target.closest<HTMLElement>('[data-builder-tab]')
   if (builderTab) { productState.builderTab = (builderTab.dataset.builderTab as ProductState['builderTab']) || 'form'; saveCurrentWorkflow(); renderProduct(); return }
-  if (action === 'back-onboarding') { productState.onboardingStep = 1; renderProduct(); return }
+  if (action === 'back-onboarding') {
+    productState.onboardingStep = productState.onboardingStep === 4 ? 2 : 1
+    renderProduct()
+    return
+  }
   if (action === 'back-to-apps') { showAppsDashboard(); return }
   if (action === 'retry-apps') { loadUserApps(); renderProduct(); return }
   if (action === 'new-workflow') { beginOnboarding(); return }
@@ -1836,7 +2065,14 @@ app.addEventListener('click', (event) => {
     const selected = productState.fields[productState.selectedField]
     const nameInput = document.querySelector<HTMLInputElement>('[data-editor="name"]')
     const typeInput = document.querySelector<HTMLSelectElement>('[data-editor="type"]')
-    if (selected && nameInput && typeInput) { selected.name = nameInput.value.trim() || selected.name; selected.type = typeInput.value; if (productState.currentAppId) saveCurrentWorkflow(); renderProduct() }
+    if (selected && nameInput && typeInput) {
+      selected.name = nameInput.value.trim() || selected.name
+      selected.type = typeInput.value
+      const specField = productState.spec?.fields[productState.selectedField]
+      if (specField) specField.name = selected.name
+      if (productState.currentAppId) saveCurrentWorkflow()
+      renderProduct()
+    }
     return
   }
   if (action === 'preview') { productState.screen = 'use'; if (productState.currentAppId) saveCurrentWorkflow(); renderProduct(); return }
@@ -1856,6 +2092,28 @@ app.addEventListener('click', (event) => {
     }
     return
   }
+  if (action === 'invite') {
+    window.alert('Team och inbjudningar kommer snart.')
+    return
+  }
+  if (action === 'new-record') { productState.screen = 'use'; productState.editingRecordId = 'new'; renderProduct(); return }
+  if (action === 'edit-record') {
+    productState.screen = 'use'
+    productState.editingRecordId = actionButton?.dataset.recordId || target.closest<HTMLElement>('[data-record-id]')?.dataset.recordId || null
+    renderProduct()
+    return
+  }
+  if (action === 'close-record') { productState.editingRecordId = null; renderProduct(); return }
+  if (action === 'delete-record') {
+    const recordId = actionButton?.dataset.recordId || target.closest<HTMLElement>('[data-record-id]')?.dataset.recordId
+    const record = productState.records.find((item) => item.id === recordId)
+    if (!record) return
+    if (!window.confirm(`Ta bort ${recordTitle(record, productState.spec)}?`)) return
+    productState.records = productState.records.filter((item) => item.id !== recordId)
+    saveCurrentWorkflow()
+    renderProduct()
+    return
+  }
   if (action === 'export') { exportReports(); return }
   if (action === 'logout') {
     setSessionUser(null)
@@ -1867,8 +2125,17 @@ app.addEventListener('click', (event) => {
     renderLanding()
     return
   }
-  const reportAction = target.closest<HTMLElement>('[data-report-action]')
-  if (reportAction) { const report = productState.reports.find((item) => item.id === Number(reportAction.dataset.reportId)); if (report) report.status = reportAction.dataset.reportAction === 'approve' ? 'Godkänd' : 'Avvisad'; saveCurrentWorkflow(); renderProduct() }
+  const statusAction = target.closest<HTMLElement>('[data-record-status]')
+  if (statusAction) {
+    const record = productState.records.find((item) => item.id === statusAction.dataset.recordId)
+    const statusField = productState.spec?.statusField
+    if (record && statusField) {
+      record.values[statusField] = statusAction.dataset.recordStatus || record.values[statusField]
+      record.updatedAt = new Date().toISOString()
+      saveCurrentWorkflow()
+      renderProduct()
+    }
+  }
 })
 
 const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -1960,11 +2227,8 @@ const handleUpload = async (file: File | undefined) => {
     showUploadResult(renderAnalysis(analysis))
   } catch (error) {
     if (currentRun !== analysisRun) return
-    const emptyFile = error instanceof Error && error.message === 'EMPTY_WORKBOOK'
-    showUploadResult(renderAnalysisError(
-      emptyFile ? 'Vi hittade inga data att analysera.' : 'Vi kunde inte läsa filen',
-      emptyFile ? 'Ladda upp en Excel-fil som innehåller ett arbetsflöde eller en tabell.' : 'Kontrollera att filen är en giltig Excel-fil och försök igen.',
-    ))
+    const copy = excelErrorCopy(error)
+    showUploadResult(renderAnalysisError(copy.title, copy.message))
   }
 }
 
