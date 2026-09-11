@@ -2,8 +2,9 @@ import './style.css'
 import './landing.css'
 import * as XLSX from 'xlsx'
 import { excelErrorCopy, parseWorkbook, type WorkbookAnalysis } from './excel'
-import { generateAppSpec, specToWorkflowFields, type AppSpec } from './architect'
-import { filterRecords, metricValue, recordTitle, recordsFromAnalysis, type AppRecord } from './records'
+import { generateAppSpec, specToWorkflowFields, type AppSpec, type ExperienceChart } from './architect'
+import { filterRecords, formatKpiValue, insightsFromRecords, recentRecords, recordTitle, recordsFromAnalysis, type AppRecord } from './records'
+import { currentPeriodKey, formatMoney } from './semantics'
 
 type IconName =
   | 'arrow'
@@ -594,7 +595,7 @@ type FlowlyStore = {
   session: { userId: string | null }
 }
 type ProductState = {
-  screen: 'onboarding' | 'projects' | 'dashboard' | 'workflows' | 'builder' | 'use' | 'approvals' | 'team' | 'settings'
+  screen: 'onboarding' | 'projects' | 'dashboard' | 'workflows' | 'builder' | 'use' | 'approvals' | 'team' | 'settings' | 'reports' | 'group'
   builderTab: 'form' | 'workflow' | 'approvals' | 'team'
   onboardingStep: 1 | 2 | 3 | 4
   onboardingError: string
@@ -613,6 +614,10 @@ type ProductState = {
   records: AppRecord[]
   recordQuery: string
   recordFilter: string
+  periodFilter: string
+  categoryFilter: string
+  groupViewId: string
+  draftDefaults: Record<string, string>
   editingRecordId: string | null
   currentAppId: string | null
   userName: string
@@ -793,6 +798,10 @@ const resetWorkspaceHomeState = () => {
   productState.records = []
   productState.recordQuery = ''
   productState.recordFilter = ''
+  productState.periodFilter = ''
+  productState.categoryFilter = ''
+  productState.groupViewId = ''
+  productState.draftDefaults = {}
   productState.editingRecordId = null
   productState.builderTab = 'form'
   productState.onboardingStep = 1
@@ -817,6 +826,10 @@ const loadAppIntoState = (app: FlowlyApp | null) => {
   productState.records = app.config.records || []
   productState.recordQuery = ''
   productState.recordFilter = ''
+  productState.periodFilter = ''
+  productState.categoryFilter = ''
+  productState.groupViewId = ''
+  productState.draftDefaults = {}
   productState.editingRecordId = null
   productState.builderTab = app.config.builderTab || 'form'
   productState.userName = getCurrentUser()?.name || productState.userName
@@ -827,7 +840,7 @@ const productState: ProductState = {
   screen: 'projects', builderTab: 'form', onboardingStep: 1, onboardingError: '', analysisProgress: [],
   topic: '', customTopic: '', fields: [], selectedField: 0,
   approver: 'Chef', afterApproval: 'Markera som klar', saved: false, published: false, reports: [], records: [],
-  recordQuery: '', recordFilter: '', editingRecordId: null, currentAppId: null,
+  recordQuery: '', recordFilter: '', periodFilter: '', categoryFilter: '', groupViewId: '', draftDefaults: {}, editingRecordId: null, currentAppId: null,
   userName: 'Flowly användare', workspaceName: 'Flowly workspace', authReady: false, appsStatus: 'idle',
 }
 
@@ -933,13 +946,22 @@ const productSidebar = () => {
   const waiting = spec?.statusField
     ? productState.records.filter((record) => /väntar|vant|öppen|oppen|pågående|pagaende|ny|planerad/i.test(record.values[spec.statusField!] || '')).length
     : 0
-  const appNav: Array<[ProductState['screen'], IconName, string]> = [
-    ['dashboard', 'chart', 'Översikt'],
-    ['use', 'clipboard', spec ? spec.entityNamePlural[0].toUpperCase() + spec.entityNamePlural.slice(1) : 'Poster'],
-    ['builder', 'settings', 'Fält'],
-    ['team', 'users', 'Team'],
-  ]
-  if (spec?.features.includes('approvals')) appNav.splice(3, 0, ['approvals', 'check', 'Godkännanden'])
+  const navFromSpec = spec?.experience?.navigation
+  const appNav: Array<[ProductState['screen'], IconName, string, string]> = navFromSpec?.length
+    ? navFromSpec.map((item) => [item.screen, item.icon, item.label, item.groupId || ''])
+    : [
+      ['dashboard', 'chart', 'Översikt', ''],
+      ['use', 'clipboard', spec ? spec.entityNamePlural[0].toUpperCase() + spec.entityNamePlural.slice(1) : 'Poster', ''],
+    ]
+  if (!appNav.some((item) => item[0] === 'builder')) appNav.push(['builder', 'settings', 'Fält', ''])
+  if (!appNav.some((item) => item[0] === 'team')) appNav.push(['team', 'users', 'Team', ''])
+  if (spec?.features.includes('approvals') && !appNav.some((item) => item[0] === 'approvals')) {
+    appNav.splice(Math.max(appNav.length - 2, 1), 0, ['approvals', 'check', 'Godkännanden', ''])
+  }
+  const navActive = (screen: ProductState['screen'], groupId: string) => {
+    if (screen === 'group') return productState.screen === 'group' && productState.groupViewId === groupId
+    return productState.screen === screen
+  }
   return `
     <aside class="product-sidebar">
       <a class="product-brand" href="#/apps" data-product-action="back-to-apps">${flowMark()}<strong>Flowly</strong></a>
@@ -947,7 +969,7 @@ const productSidebar = () => {
       <nav class="product-nav">
         <p>Workspace</p>
         <button type="button" data-product-action="back-to-apps" class="${productState.screen === 'projects' ? 'is-active' : ''}">${icon('layers', 16)}Mina appar</button>
-        ${inApp ? `<p class="nav-spacer">App</p>${appNav.map(([screen, ic, label]) => `<button type="button" data-product-screen="${screen}" class="${productState.screen === screen ? 'is-active' : ''}">${icon(ic, 16)}${label}${screen === 'approvals' && waiting ? `<b>${waiting}</b>` : ''}</button>`).join('')}` : ''}
+        ${inApp ? `<p class="nav-spacer">App</p>${appNav.map(([screen, ic, label, groupId]) => `<button type="button" data-product-screen="${screen}" ${groupId ? `data-group-id="${escapeHtml(groupId)}"` : ''} class="${navActive(screen, groupId) ? 'is-active' : ''}">${icon(ic, 16)}${label}${screen === 'approvals' && waiting ? `<b>${waiting}</b>` : ''}</button>`).join('')}` : ''}
         <p class="nav-spacer">Konto</p>
         <button type="button" data-product-screen="settings" class="${productState.screen === 'settings' ? 'is-active' : ''}">${icon('settings', 16)}Inställningar</button>
       </nav>
@@ -967,10 +989,10 @@ const workflowFieldsFromAnalysis = (analysis: ExcelAnalysis): WorkflowField[] =>
 
 const analysisStageList = [
   ['file', 'Läser Excel-filen'],
-  ['columns', 'Identifierar kolumner'],
-  ['types', 'Förstår datatyper'],
+  ['columns', 'Identifierar struktur och sektioner'],
+  ['types', 'Hittar beräkningar och kategorier'],
   ['explanation', 'Läser din beskrivning'],
-  ['workflow', 'Identifierar arbetsflödet'],
+  ['workflow', 'Designar appen kring hur du arbetar'],
   ['ready', 'Förbereder din app'],
 ] as const
 
@@ -993,7 +1015,7 @@ const onboardingView = () => {
       <div class="onboarding-copy">
         <p class="product-kicker">Steg 02 · Excel</p>
         <h1>Ladda upp er Excel-fil</h1>
-        <p>Flowly läser kolumner, rader och datatyper lokalt. Själva datan blir posterna i appen.</p>
+        <p>Flowly läser struktur, kategorier och beräkningar lokalt. Filen är källan — appen blir arbetsytan.</p>
       </div>
       <label class="product-upload-zone" for="product-file-upload"><input id="product-file-upload" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" /><span class="upload-symbol">${icon('upload', 25)}</span><strong>Släpp din Excel-fil här</strong><small>eller välj fil från datorn</small><em>.xlsx / .xls</em></label>
       <div class="product-upload-result" aria-live="polite"></div>
@@ -1017,17 +1039,23 @@ const onboardingView = () => {
   const spec = productState.spec
   const analysis = productState.analysis
   const extraSheets = (analysis?.sheetNames || []).filter((name) => name !== analysis?.primarySheet)
+  const matrix = spec?.experience?.layout === 'period-matrix'
+  const groupCount = spec?.experience?.groups.length || 0
+  const categoryCount = spec?.experience?.groups.reduce((sum, group) => sum + group.series.filter((item) => item.role === 'data').length, 0) || 0
+  const summaryLine = matrix
+    ? `Vi hittade <strong>${groupCount} sektioner</strong> och <strong>${categoryCount} kategorier</strong> över ${spec?.experience?.periods.length || 0} perioder i ${escapeHtml(analysis?.fileName || 'Excel-filen')}.`
+    : `Vi hittade <strong>${analysis?.rowCount ?? 0} ${escapeHtml(spec?.entityNamePlural || 'rader')}</strong> i ${escapeHtml(analysis?.fileName || 'Excel-filen')}${analysis?.truncated ? ' (visar de första 5 000)' : ''}.`
   return `
     <div class="onboarding-panel onboarding-finished">
       <div class="onboarding-copy">
         <p class="product-kicker">Steg 04 · Skapa app</p>
         <h1>Flowly har förstått din Excel-fil.</h1>
-        <p>Kontrollera sammanfattningen innan du skapar appen. Den fylls med de riktiga raderna från filen.</p>
+        <p>Kontrollera sammanfattningen innan du skapar appen. Den fylls med de riktiga värdena från filen — inte med påhittad data.</p>
       </div>
       <div class="analysis-summary">
         <p class="product-kicker">Vi tror att din app handlar om</p>
         <h2>${escapeHtml(spec?.understoodAs || productState.topic || 'Ert arbetsflöde')}</h2>
-        <p>Vi hittade <strong>${analysis?.rowCount ?? 0} ${escapeHtml(spec?.entityNamePlural || 'rader')}</strong> i ${escapeHtml(analysis?.fileName || 'Excel-filen')}${analysis?.truncated ? ' (visar de första 5 000)' : ''}.</p>
+        <p>${summaryLine}</p>
         ${extraSheets.length ? `<p class="sheet-note">Fler ark i filen: ${extraSheets.map(escapeHtml).join(', ')}. MVP:n använder <strong>${escapeHtml(analysis?.primarySheet || '')}</strong>.</p>` : ''}
         <div class="summary-fields">${(spec?.fields || []).map((field) => `<span>${escapeHtml(field.name)}<small>${field.type}</small></span>`).join('')}</div>
         <div class="summary-actions"><p class="product-kicker">Flowly föreslår</p><ul>${(spec?.suggestedActions || []).map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul></div>
@@ -1100,22 +1128,121 @@ const projectsView = () => {
 
 const appTitle = () => productState.spec?.name || productState.topic || 'Arbetsflöde'
 
+const isMatrixApp = () => productState.spec?.experience?.layout === 'period-matrix'
+
+const quickActionButtons = () => {
+  const actions = productState.spec?.experience?.quickActions || []
+  if (!actions.length) {
+    return `<button type="button" class="button button-primary button-small" data-product-action="new-record">${icon('plus', 14)} Ny ${escapeHtml(productState.spec?.entityName.toLocaleLowerCase('sv-SE') || 'post')}</button>`
+  }
+  return actions.map((action, index) => `<button type="button" class="${index === 0 ? 'button button-primary button-small' : 'button button-light button-small'}" data-product-action="quick-add" ${action.groupId ? `data-group-id="${escapeHtml(action.groupId)}"` : ''}>${icon('plus', 14)} ${escapeHtml(action.label)}</button>`).join('')
+}
+
+const renderExperienceChart = (chart: ExperienceChart) => {
+  const spec = productState.spec
+  const records = productState.records
+  if (!spec) return ''
+  if (chart.kind === 'groups-by-period') {
+    const insights = insightsFromRecords(records, spec)
+    const periods = spec.experience?.periods || []
+    const groupIds = chart.groupIds || spec.experience?.groups.map((group) => group.id) || []
+    const max = Math.max(1, ...groupIds.flatMap((id) => periods.map((period) => insights.periodTotals[id]?.[period] || 0)))
+    return `<section class="flow-card"><div class="flow-card-head"><p class="product-kicker">Över tid</p><h2>${escapeHtml(chart.title)}</h2></div>
+      <div class="flow-chart">${periods.map((period) => `<div class="flow-chart-col"><div class="bars">${groupIds.map((id, index) => `<i class="tone-${index}" style="height:${Math.max(2, ((insights.periodTotals[id]?.[period] || 0) / max) * 100)}%"></i>`).join('')}</div><small>${escapeHtml(period)}</small></div>`).join('')}</div>
+      <div class="flow-chart-legend">${groupIds.map((id, index) => `<span class="tone-${index}">${escapeHtml(spec.experience?.groups.find((group) => group.id === id)?.title || id)}</span>`).join('')}</div>
+    </section>`
+  }
+  if (chart.kind === 'series-totals') {
+    const insights = insightsFromRecords(records, spec)
+    const groupId = chart.groupIds?.[0] || spec.experience?.groups[0]?.id || ''
+    const rows = Object.entries(insights.categoryTotals[groupId] || {}).sort((a, b) => b[1] - a[1])
+    const max = Math.max(1, ...rows.map((row) => row[1]))
+    if (!rows.length) return `<section class="flow-card"><div class="flow-card-head"><h2>${escapeHtml(chart.title)}</h2></div><div class="quiet-empty">${escapeHtml(spec.experience?.emptyPrompt || 'Ingen data ännu.')}</div></section>`
+    return `<section class="flow-card"><div class="flow-card-head"><p class="product-kicker">Fördelning</p><h2>${escapeHtml(chart.title)}</h2></div>
+      <div class="flow-bars">${rows.map(([name, value]) => `<div class="flow-bar-row"><span>${escapeHtml(name)}</span><b><i style="width:${Math.max(4, (value / max) * 100)}%"></i></b><em>${escapeHtml(formatMoney(value))}</em></div>`).join('')}</div>
+    </section>`
+  }
+  if (chart.kind === 'status-distribution') {
+    const field = spec.statusField
+    const options = spec.fields.find((item) => item.key === field)?.options || []
+    const rows = options.map((option) => [option, records.filter((record) => record.values[field!] === option).length] as const)
+    const max = Math.max(1, ...rows.map((row) => row[1]))
+    return `<section class="flow-card"><div class="flow-card-head"><p class="product-kicker">Status</p><h2>${escapeHtml(chart.title)}</h2></div>
+      <div class="flow-bars">${rows.map(([name, value]) => `<div class="flow-bar-row"><span>${escapeHtml(name)}</span><b><i style="width:${Math.max(4, (value / max) * 100)}%"></i></b><em>${value}</em></div>`).join('')}</div>
+    </section>`
+  }
+  return ''
+}
+
+const activityRow = (record: AppRecord) => {
+  const spec = productState.spec
+  const amount = record.values.amount || record.values.Belopp || Object.values(record.values)[1] || ''
+  const meta = spec?.experience?.layout === 'period-matrix'
+    ? `${record.values.period || ''} · ${record.source === 'user' ? 'Tillagd' : 'Från Excel'}`
+    : (record.source === 'excel' ? 'Från Excel' : 'Tillagd')
+  return `<div class="reports-table-row"><div><strong>${escapeHtml(recordTitle(record, spec))}</strong><small>${escapeHtml(meta)}</small></div><span>${escapeHtml(amount ? (spec?.experience?.layout === 'period-matrix' ? formatMoney(Number(amount) || 0) : amount) : '—')}</span><button type="button" class="text-link" data-product-action="edit-record" data-record-id="${record.id}">Öppna ${icon('arrow', 13)}</button></div>`
+}
+
 const dashboardView = () => {
   if (!productState.currentAppId) return projectsView()
   const spec = productState.spec
   const records = productState.records
-  const metrics = spec?.metrics?.length
-    ? spec.metrics
-    : [{ id: 'count', label: 'Poster', kind: 'count' as const }]
-  const recent = [...records].slice(-8).reverse()
-  return `<div class="product-page">${productHeader(appTitle(), spec?.description || 'Byggt från er Excel-fil och er beskrivning.')}
+  const experience = spec?.experience
+  const kpis = experience?.kpis?.length
+    ? experience.kpis
+    : (spec?.metrics || [{ id: 'count', label: 'Poster', kind: 'count' as const }]).map((metric) => ({ ...metric, format: 'number' as const }))
+  const recent = recentRecords(records, 8)
+  const charts = experience?.charts || []
+  const subtitle = spec?.description && spec.description.length > 140 ? spec.description.slice(0, 140) + '…' : (spec?.description || 'Byggt från er Excel-fil och er beskrivning.')
+  return `<div class="product-page">${productHeader(appTitle(), subtitle)}
     <div class="understood-banner">
-      <strong>Vi hittade ${records.length} ${escapeHtml(spec?.entityNamePlural || 'rader')} i ${escapeHtml(productState.analysis?.fileName || 'Excel-filen')}.</strong>
-      <span>${escapeHtml(spec?.understoodAs || '')}</span>
+      <strong>${escapeHtml(spec?.understoodAs || 'Flowly har byggt en app från din Excel-fil.')}</strong>
+      <span>${isMatrixApp() ? 'Siffrorna räknas om när du lägger till eller tar bort poster.' : `Visar ${records.length} ${spec?.entityNamePlural || 'rader'} från ${escapeHtml(productState.analysis?.fileName || 'Excel-filen')}.`}</span>
     </div>
-    <div class="metric-grid">${metrics.map((metric) => `<div><span class="metric-icon">${icon('chart', 16)}</span><strong>${escapeHtml(metricValue(metric, records))}</strong><small>${escapeHtml(metric.label)}</small></div>`).join('')}</div>
-    <div class="product-section-heading"><div><p class="product-kicker">Senaste</p><h2>${escapeHtml(spec ? spec.entityNamePlural[0].toUpperCase() + spec.entityNamePlural.slice(1) : 'Poster')}</h2></div><button type="button" class="button button-primary button-small" data-product-screen="use">Visa alla ${icon('arrow', 14)}</button></div>
-    ${recent.length ? `<div class="reports-table"><div class="reports-table-head"><span>${escapeHtml(spec?.entityName || 'Post')}</span><span>${escapeHtml(spec?.statusField || 'Info')}</span><span></span></div>${recent.map((record) => `<div class="reports-table-row"><div><strong>${escapeHtml(recordTitle(record, spec))}</strong><small>${escapeHtml(record.source === 'excel' ? 'Från Excel' : 'Tillagd')}</small></div><span>${escapeHtml(spec?.statusField ? record.values[spec.statusField] || '—' : Object.values(record.values)[1] || '—')}</span><button type="button" class="text-link" data-product-action="edit-record" data-record-id="${record.id}">Öppna ${icon('arrow', 13)}</button></div>`).join('')}</div>` : '<div class="quiet-empty">Inga rader importerades. Ladda upp en Excel-fil med data.</div>'}
+    <div class="flow-quick-row">${quickActionButtons()}</div>
+    <div class="metric-grid metric-grid-${Math.min(kpis.length || 1, 4)}">${kpis.map((kpi) => {
+      const value = formatKpiValue(kpi, records, spec)
+      const negative = String(value).startsWith('−')
+      return `<div class="${negative ? 'is-negative' : ''}"><span class="metric-icon">${icon('chart', 16)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(kpi.label)}</small></div>`
+    }).join('')}</div>
+    <div class="flow-dashboard-grid">${charts.map(renderExperienceChart).join('')}</div>
+    <div class="product-section-heading"><div><p class="product-kicker">Senaste</p><h2>Aktivitet</h2></div>${isMatrixApp() ? '' : `<button type="button" class="button button-primary button-small" data-product-screen="use">Visa alla ${icon('arrow', 14)}</button>`}</div>
+    ${recent.length ? `<div class="reports-table"><div class="reports-table-head"><span>${escapeHtml(spec?.entityName || 'Post')}</span><span>Belopp</span><span></span></div>${recent.map(activityRow).join('')}</div>` : `<div class="quiet-empty"><h3>${escapeHtml(experience?.emptyPrompt || 'Inga rader importerades.')}</h3><div class="flow-quick-row">${quickActionButtons()}</div></div>`}
+  </div>`
+}
+
+const groupView = () => {
+  const spec = productState.spec
+  const group = spec?.experience?.groups.find((item) => item.id === productState.groupViewId)
+  if (!group) return dashboardView()
+  const insights = insightsFromRecords(productState.records, spec)
+  const extra = {
+    group: group.title,
+    ...(productState.periodFilter ? { period: productState.periodFilter } : {}),
+    ...(productState.categoryFilter ? { category: productState.categoryFilter } : {}),
+  }
+  const rows = filterRecords(productState.records, productState.recordQuery, undefined, undefined, extra)
+  const categories = Object.entries(insights.categoryTotals[group.id] || {}).sort((a, b) => b[1] - a[1])
+  const periods = spec?.experience?.periods || []
+  const average = group.series.filter((item) => item.role === 'data').length
+    ? (insights.groupTotals[group.id] || 0) / Math.max(1, periods.length)
+    : 0
+  return `<div class="product-page">${productHeader(group.title, `Totalt ${formatMoney(insights.groupTotals[group.id] || 0)} · snitt ${formatMoney(average)} per period.`)}
+    <div class="flow-quick-row"><button type="button" class="button button-primary button-small" data-product-action="quick-add" data-group-id="${escapeHtml(group.id)}">${icon('plus', 14)} ${escapeHtml(spec?.experience?.quickActions.find((action) => action.groupId === group.id)?.label || `Lägg till ${group.title}`)}</button></div>
+    <div class="flow-filter-chips"><button type="button" class="${productState.periodFilter ? '' : 'is-active'}" data-period-filter="">Alla</button>${periods.map((period) => `<button type="button" class="${productState.periodFilter === period ? 'is-active' : ''}" data-period-filter="${escapeHtml(period)}">${escapeHtml(period)}</button>`).join('')}</div>
+    <div class="flow-category-grid">${categories.map(([name, value]) => `<button type="button" class="flow-category-card ${productState.categoryFilter === name ? 'is-active' : ''}" data-category-filter="${escapeHtml(name)}"><strong>${escapeHtml(name)}</strong><span>${escapeHtml(formatMoney(value))}</span></button>`).join('') || `<div class="quiet-empty">${escapeHtml(spec?.experience?.emptyPrompt || 'Inget här ännu.')}</div>`}</div>
+    <div class="records-toolbar">
+      <input type="search" class="records-search" data-record-query placeholder="Sök…" value="${escapeHtml(productState.recordQuery)}" />
+    </div>
+    ${rows.length ? `<div class="records-table-wrap"><table class="records-table"><thead><tr><th>Kategori</th><th>Period</th><th>Belopp</th><th>Anteckning</th><th></th></tr></thead><tbody>${rows.map((record) => `<tr><td>${escapeHtml(record.values.category || '')}</td><td>${escapeHtml(record.values.period || '')}</td><td>${escapeHtml(formatMoney(Number(record.values.amount || 0)))}</td><td>${escapeHtml(record.values.note || '—')}</td><td class="record-row-actions"><button type="button" class="text-link" data-product-action="edit-record" data-record-id="${record.id}">Redigera</button><button type="button" class="text-link" data-product-action="delete-record" data-record-id="${record.id}">Ta bort</button></td></tr>`).join('')}</tbody></table></div>` : `<div class="quiet-empty"><h3>Inga poster ${productState.periodFilter || productState.categoryFilter ? 'för filtret' : 'ännu'}.</h3><button type="button" class="button button-primary button-small" data-product-action="quick-add" data-group-id="${escapeHtml(group.id)}">${icon('plus', 14)} Lägg till</button></div>`}
+  </div>`
+}
+
+const reportsView = () => {
+  const spec = productState.spec
+  const charts = spec?.experience?.charts || []
+  return `<div class="product-page">${productHeader('Rapporter', 'Trender och fördelning baserat på dina riktiga poster.')}
+    <div class="flow-dashboard-grid">${charts.map(renderExperienceChart).join('') || '<div class="quiet-empty">Inga rapporter behövs för den här appen ännu.</div>'}</div>
   </div>`
 }
 
@@ -1135,12 +1262,18 @@ const fieldInput = (field: { key?: string; name: string; type: string; required:
 
 const recordEditor = () => {
   const spec = productState.spec
-  const fields = spec?.fields || productState.fields.map((field) => ({ key: field.name, name: field.name, type: field.type.toLowerCase(), required: field.required, options: undefined as string[] | undefined }))
+  const group = spec?.experience?.groups.find((item) => item.id === productState.draftDefaults.group || item.title === productState.draftDefaults.group)
+  const fields = (spec?.fields || productState.fields.map((field) => ({ key: field.name, name: field.name, type: field.type.toLowerCase(), required: field.required, options: undefined as string[] | undefined }))).map((field) => {
+    if (field.key === 'category' && group) {
+      return { ...field, options: group.series.filter((item) => item.role === 'data').map((item) => item.name) }
+    }
+    return field
+  })
   const existing = productState.editingRecordId && productState.editingRecordId !== 'new'
     ? productState.records.find((record) => record.id === productState.editingRecordId)
     : undefined
-  const title = productState.editingRecordId === 'new' ? `Ny ${spec?.entityName.toLocaleLowerCase('sv-SE') || 'post'}` : `Redigera ${spec?.entityName.toLocaleLowerCase('sv-SE') || 'post'}`
-  return `<form class="record-form">${fields.map((field) => `<label>${escapeHtml(field.name)}${fieldInput(field, existing?.values[field.key || field.name] || '')}</label>`).join('')}<p class="form-error" aria-live="polite"></p><div class="record-form-actions"><button type="submit" class="button button-primary">Spara ${icon('arrow', 15)}</button><button type="button" class="button button-light" data-product-action="close-record">Avbryt</button></div></form>`
+  const values = { ...productState.draftDefaults, ...(existing?.values || {}) }
+  return `<form class="record-form">${fields.map((field) => `<label>${escapeHtml(field.name)}${fieldInput(field, values[field.key || field.name] || '')}</label>`).join('')}<p class="form-error" aria-live="polite"></p><div class="record-form-actions"><button type="submit" class="button button-primary">Spara ${icon('arrow', 15)}</button><button type="button" class="button button-light" data-product-action="close-record">Avbryt</button></div></form>`
 }
 
 const useWorkflowView = () => {
@@ -1189,6 +1322,8 @@ const productContent = () => {
   if (productState.screen === 'projects') return projectsView()
   if (productState.screen === 'builder') return builderView()
   if (productState.screen === 'use') return useWorkflowView()
+  if (productState.screen === 'group') return groupView()
+  if (productState.screen === 'reports') return reportsView()
   if (productState.screen === 'approvals') return approvalsView()
   if (productState.screen === 'workflows') return workflowsView()
   if (productState.screen === 'team') return teamView()
@@ -1781,7 +1916,7 @@ const handleProductFile = async (file: File | undefined) => {
     productState.analysisProgress = ['file']
     renderProduct()
     await paint()
-    const analysis = await parseWorkbook(file)
+    const analysis = await parseWorkbook(file, productState.customTopic)
     productState.analysis = analysis
     productState.analysisProgress = ['file', 'columns', 'types']
     renderProduct()
@@ -1796,7 +1931,7 @@ const handleProductFile = async (file: File | undefined) => {
     })
     productState.spec = spec
     productState.fields = specToWorkflowFields(spec)
-    productState.records = recordsFromAnalysis(analysis, makeId)
+    productState.records = recordsFromAnalysis(analysis, makeId, spec)
     productState.analysisProgress = ['file', 'columns', 'types', 'explanation', 'workflow', 'ready']
     renderProduct()
     await paint()
@@ -1990,6 +2125,10 @@ app.addEventListener('submit', (event) => {
     productState.records.push({ id: makeId(), values, createdAt: now, updatedAt: now, source: 'user' })
   }
   productState.editingRecordId = null
+  productState.draftDefaults = {}
+  if (isMatrixApp()) {
+    productState.screen = productState.groupViewId ? 'group' : 'dashboard'
+  }
   saveCurrentWorkflow()
   renderProduct()
 })
@@ -2005,6 +2144,10 @@ app.addEventListener('click', (event) => {
     if (nextScreen === 'projects') { showAppsDashboard(); return }
     if (nextScreen === 'settings' || productState.currentAppId) {
       productState.screen = nextScreen
+      productState.groupViewId = screenButton.dataset.groupId || ''
+      productState.editingRecordId = null
+      productState.categoryFilter = ''
+      productState.periodFilter = ''
       if (productState.currentAppId) setAppHash(`/apps/${productState.currentAppId}`)
       renderProduct()
     }
@@ -2096,14 +2239,46 @@ app.addEventListener('click', (event) => {
     window.alert('Team och inbjudningar kommer snart.')
     return
   }
-  if (action === 'new-record') { productState.screen = 'use'; productState.editingRecordId = 'new'; renderProduct(); return }
+  if (action === 'new-record') { productState.screen = 'use'; productState.editingRecordId = 'new'; productState.draftDefaults = {}; renderProduct(); return }
+  if (action === 'quick-add') {
+    const groupId = actionButton?.dataset.groupId || ''
+    const group = productState.spec?.experience?.groups.find((item) => item.id === groupId)
+    productState.draftDefaults = {
+      group: group?.title || '',
+      period: (productState.spec?.experience?.periods || []).includes(currentPeriodKey()) ? currentPeriodKey() : (productState.spec?.experience?.periods[0] || ''),
+    }
+    if (groupId) productState.groupViewId = groupId
+    productState.screen = 'use'
+    productState.editingRecordId = 'new'
+    renderProduct()
+    return
+  }
+  const periodChip = target.closest<HTMLElement>('[data-period-filter]')
+  if (periodChip) {
+    productState.periodFilter = periodChip.dataset.periodFilter || ''
+    renderProduct()
+    return
+  }
+  const categoryChip = target.closest<HTMLElement>('[data-category-filter]')
+  if (categoryChip) {
+    const next = categoryChip.dataset.categoryFilter || ''
+    productState.categoryFilter = productState.categoryFilter === next ? '' : next
+    renderProduct()
+    return
+  }
   if (action === 'edit-record') {
     productState.screen = 'use'
     productState.editingRecordId = actionButton?.dataset.recordId || target.closest<HTMLElement>('[data-record-id]')?.dataset.recordId || null
     renderProduct()
     return
   }
-  if (action === 'close-record') { productState.editingRecordId = null; renderProduct(); return }
+  if (action === 'close-record') {
+    productState.editingRecordId = null
+    productState.draftDefaults = {}
+    if (isMatrixApp()) productState.screen = productState.groupViewId ? 'group' : 'dashboard'
+    renderProduct()
+    return
+  }
   if (action === 'delete-record') {
     const recordId = actionButton?.dataset.recordId || target.closest<HTMLElement>('[data-record-id]')?.dataset.recordId
     const record = productState.records.find((item) => item.id === recordId)

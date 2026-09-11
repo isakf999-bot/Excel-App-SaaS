@@ -2119,3 +2119,50 @@ body.is-product-mode .auth-form input { background: #fff; border-color: var(--li
 .record-form { display: grid; gap: 14px; margin-top: 8px; }
 .record-form-actions { display: flex; gap: 10px; margin-top: 8px; }
 .record-editor-card { max-width: 640px; }
+
+.flow-quick-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 18px; }
+.metric-grid.is-negative strong, .metric-grid .is-negative strong { color: var(--stop); }
+.metric-grid-1 { grid-template-columns: 1fr; }
+.metric-grid-2 { grid-template-columns: repeat(2, 1fr); }
+.metric-grid-3 { grid-template-columns: repeat(3, 1fr); }
+.metric-grid-4 { grid-template-columns: repeat(4, 1fr); }
+.flow-dashboard-grid { display: grid; grid-template-columns: 1.4fr .9fr; gap: 14px; margin-top: 22px; }
+.flow-card { padding: 18px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fff; box-shadow: var(--shadow-sm); }
+.flow-card-head { margin-bottom: 16px; }
+.flow-card-head h2 { font-size: 18px; }
+.flow-chart { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 8px; align-items: end; height: 180px; }
+.flow-chart-col { display: grid; grid-template-rows: 1fr auto; min-width: 0; height: 100%; }
+.flow-chart-col .bars { display: flex; gap: 3px; align-items: end; height: 100%; }
+.flow-chart-col i { display: block; flex: 1; min-height: 4px; border-radius: 4px 4px 0 0; background: var(--pine); }
+.flow-chart-col i.tone-1 { background: #c45c4a; }
+.flow-chart-col i.tone-2 { background: #456276; }
+.flow-chart-col small { margin-top: 6px; color: var(--ink-3); font-size: 10px; text-align: center; }
+.flow-chart-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 14px; color: var(--ink-2); font-size: 12px; }
+.flow-chart-legend span::before { content: ''; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 99px; background: var(--pine); }
+.flow-chart-legend .tone-1::before { background: #c45c4a; }
+.flow-bars { display: grid; gap: 8px; }
+.flow-bar-row { display: grid; grid-template-columns: 110px 1fr 88px; gap: 10px; align-items: center; font-size: 12px; }
+.flow-bar-row b { display: block; height: 8px; overflow: hidden; border-radius: 99px; background: var(--bg-2); }
+.flow-bar-row i { display: block; height: 100%; border-radius: 99px; background: var(--pine); }
+.flow-bar-row em { color: var(--ink-3); font-style: normal; text-align: right; }
+.flow-filter-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+.flow-filter-chips button { padding: 6px 10px; border: 1px solid var(--line); border-radius: 99px; background: #fff; color: var(--ink-2); font-size: 11px; }
+.flow-filter-chips button.is-active { border-color: var(--pine); background: var(--pine-soft); color: var(--pine); }
+.flow-category-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 22px; }
+.flow-category-card { padding: 14px; border: 1px solid var(--line); border-radius: var(--radius-md); background: #fff; text-align: left; box-shadow: var(--shadow-sm); }
+.flow-category-card strong, .flow-category-card span { display: block; }
+.flow-category-card span { margin-top: 6px; color: var(--ink-3); font-size: 12px; }
+.flow-category-card.is-active, .flow-category-card:hover { border-color: var(--pine); box-shadow: 0 0 0 2px rgba(26, 71, 58, .08); }
+@media (max-width: 900px) {
+  .flow-dashboard-grid, .metric-grid-3, .metric-grid-4 { grid-template-columns: 1fr 1fr; }
+  .flow-category-grid { grid-template-columns: 1fr 1fr; }
+  .flow-chart { grid-template-columns: repeat(6, minmax(0, 1fr)); height: 140px; }
+}
+@media (max-width: 680px) {
+  .flow-dashboard-grid, .metric-grid-2, .metric-grid-3, .metric-grid-4, .flow-category-grid { grid-template-columns: 1fr; }
+  .flow-bar-row { grid-template-columns: 1fr 70px; }
+  .flow-bar-row span { grid-column: 1 / -1; }
+  .flow-quick-row .button { flex: 1; }
+  .product-nav { overflow-x: auto; justify-content: flex-start; }
+}
+
