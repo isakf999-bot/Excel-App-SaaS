@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx'
+import { analyzeSemantics, detectPeriodHeader, findHeaderRowIndex, type DetectedFormula, type SemanticModel } from './semantics'
 
 export type InferredFieldType = 'text' | 'number' | 'date' | 'select'
 
@@ -16,6 +17,8 @@ export type AnalyzedSheet = {
   columns: AnalyzedColumn[]
   sampleRows: string[][]
   rows: string[][]
+  rawRows: string[][]
+  formulas: DetectedFormula[]
 }
 
 export type WorkbookAnalysis = {
@@ -29,6 +32,7 @@ export type WorkbookAnalysis = {
   rowCount: number
   formFields: string[]
   statusFields: string[]
+  semantics?: SemanticModel
 }
 
 export type ExcelParseErrorCode = 'EMPTY_WORKBOOK' | 'NO_HEADERS' | 'INVALID_FILE' | 'UNSUPPORTED_TYPE'
@@ -74,7 +78,7 @@ const uniqueHeader = (raw: string, index: number, used: Map<string, number>) => 
   return count === 0 ? base : `${base} (${count + 1})`
 }
 
-const inferColumnType = (values: string[]): { type: InferredFieldType; uniqueValues: string[] } => {
+const inferColumnType = (name: string, values: string[]): { type: InferredFieldType; uniqueValues: string[] } => {
   const filled = values.filter((value) => value !== '')
   const unique = [...new Set(filled)]
   if (!filled.length) return { type: 'text', uniqueValues: [] }
@@ -85,29 +89,43 @@ const inferColumnType = (values: string[]): { type: InferredFieldType; uniqueVal
   if (numberHits / filled.length >= 0.6) return { type: 'number', uniqueValues: [] }
 
   const uniqueRatio = unique.length / filled.length
-  if (unique.length >= 2 && unique.length <= CATEGORY_MAX_UNIQUE && uniqueRatio <= 0.35) {
+  const namedStatus = /status|godk[aä]nd|läge|lage/i.test(name)
+  if (unique.length >= 2 && unique.length <= CATEGORY_MAX_UNIQUE && (namedStatus || uniqueRatio <= 0.35)) {
     return { type: 'select', uniqueValues: unique.slice(0, CATEGORY_MAX_UNIQUE) }
   }
   return { type: 'text', uniqueValues: unique.slice(0, CATEGORY_MAX_UNIQUE) }
 }
 
+const collectFormulas = (sheet: XLSX.WorkSheet): DetectedFormula[] => {
+  const formulas: DetectedFormula[] = []
+  Object.keys(sheet).forEach((cell) => {
+    if (cell.startsWith('!')) return
+    const formula = sheet[cell]?.f
+    if (formula) formulas.push({ cell, formula: String(formula) })
+  })
+  return formulas.slice(0, 80)
+}
+
 const parseSheet = (name: string, sheet: XLSX.WorkSheet): AnalyzedSheet | null => {
   const matrix = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '', raw: false, dateNF: 'yyyy-mm-dd' })
-  const nonEmpty = matrix.filter((row) => Array.isArray(row) && row.some((cell) => cellToString(cell) !== ''))
-  if (nonEmpty.length < 2) return null
+  const rawRows = matrix
+    .map((row) => (Array.isArray(row) ? row.map((cell) => cellToString(cell)) : []))
+    .filter((row) => row.some((cell) => cell !== ''))
+  if (rawRows.length < 2) return null
 
-  const headerCells = (nonEmpty[0] ?? []).map((cell) => cellToString(cell))
+  const headerIndex = findHeaderRowIndex(rawRows)
+  const headerCells = (rawRows[headerIndex] ?? []).map((cell) => cellToString(cell))
   if (!headerCells.some((cell) => cell !== '')) return null
 
   const used = new Map<string, number>()
   const columns = headerCells.map((cell, index) => uniqueHeader(cell, index, used))
-  const dataRows = nonEmpty.slice(1).map((row) => columns.map((_, index) => cellToString(row[index])))
+  const dataRows = rawRows.slice(headerIndex + 1).map((row) => columns.map((_, index) => cellToString(row[index])))
   const storedRows = dataRows.slice(0, MAX_STORED_ROWS)
-  const analyzedColumns = columns.map((name, index) => {
+  const analyzedColumns = columns.map((columnName, index) => {
     const values = storedRows.map((row) => row[index] ?? '')
-    const inferred = inferColumnType(values)
+    const inferred = inferColumnType(columnName, values)
     return {
-      name,
+      name: columnName,
       type: inferred.type,
       uniqueValues: inferred.uniqueValues,
       emptyCount: values.filter((value) => value === '').length,
@@ -121,10 +139,12 @@ const parseSheet = (name: string, sheet: XLSX.WorkSheet): AnalyzedSheet | null =
     columns: analyzedColumns,
     sampleRows: storedRows.slice(0, SAMPLE_ROWS),
     rows: storedRows,
+    rawRows,
+    formulas: collectFormulas(sheet),
   }
 }
 
-export const parseWorkbook = async (file: File): Promise<WorkbookAnalysis> => {
+export const parseWorkbook = async (file: File, explanation = ''): Promise<WorkbookAnalysis> => {
   const extension = file.name.toLocaleLowerCase('sv-SE').split('.').pop()
   if (extension !== 'xlsx' && extension !== 'xls') {
     throw new ExcelParseError('UNSUPPORTED_TYPE', 'Den filtypen stöds inte')
@@ -151,7 +171,15 @@ export const parseWorkbook = async (file: File): Promise<WorkbookAnalysis> => {
     throw new ExcelParseError('NO_HEADERS', 'Vi kunde inte hitta någon tydlig tabell i Excel-filen. Kontrollera att första raden innehåller kolumnnamn.')
   }
 
-  const primary = [...sheets].sort((a, b) => b.rowCount - a.rowCount || b.columns.length - a.columns.length)[0]
+  const scored = sheets.map((sheet) => ({
+    sheet,
+    score:
+      (detectPeriodHeader(sheet.rawRows.find((row) => detectPeriodHeader(row)) || []) ? 80 : 0)
+      + sheet.rowCount
+      + sheet.columns.length,
+  })).sort((a, b) => b.score - a.score)
+  const primary = scored[0].sheet
+  const semantics = analyzeSemantics(primary.rawRows, primary.formulas, explanation)
   const statusFields = primary.columns.filter((column) => /status|godk[aä]nd|approved/i.test(column.name)).map((column) => column.name)
   const formFields = primary.columns.filter((column) => !statusFields.includes(column.name)).map((column) => column.name)
 
@@ -163,15 +191,23 @@ export const parseWorkbook = async (file: File): Promise<WorkbookAnalysis> => {
     truncated: primary.rowCount > primary.rows.length,
     columns: primary.columns.map((column) => column.name),
     rows: primary.sampleRows,
-    rowCount: primary.rowCount,
+    rowCount: semantics.layout === 'period-matrix'
+      ? semantics.groups.reduce((sum, group) => sum + group.series.filter((item) => item.role === 'data').length, 0)
+      : primary.rowCount,
     formFields: formFields.length ? formFields : primary.columns.map((column) => column.name),
     statusFields,
+    semantics,
   }
 }
 
 export const primarySheet = (analysis: WorkbookAnalysis): AnalyzedSheet => {
   if (analysis.sheets?.length) {
-    return analysis.sheets.find((sheet) => sheet.name === analysis.primarySheet) ?? analysis.sheets[0]
+    const sheet = analysis.sheets.find((item) => item.name === analysis.primarySheet) ?? analysis.sheets[0]
+    return {
+      ...sheet,
+      rawRows: sheet.rawRows || [analysis.columns || [], ...(sheet.rows || analysis.rows || [])],
+      formulas: sheet.formulas || [],
+    }
   }
   return {
     name: analysis.primarySheet || analysis.sheetNames?.[0] || 'Blad1',
@@ -185,7 +221,15 @@ export const primarySheet = (analysis: WorkbookAnalysis): AnalyzedSheet => {
     })),
     sampleRows: analysis.rows || [],
     rows: analysis.rows || [],
+    rawRows: [analysis.columns || [], ...(analysis.rows || [])],
+    formulas: [],
   }
+}
+
+export const sheetSemantics = (analysis: WorkbookAnalysis, explanation = ''): SemanticModel => {
+  if (analysis.semantics) return analysis.semantics
+  const sheet = primarySheet(analysis)
+  return analyzeSemantics(sheet.rawRows, sheet.formulas, explanation)
 }
 
 export const excelErrorCopy = (error: unknown): { title: string; message: string } => {
